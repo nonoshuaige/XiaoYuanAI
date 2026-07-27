@@ -76,15 +76,40 @@ SQLite 中保存的完整聊天记录。浏览器只使用 `localStorage` 记住
 
 ```text
 用户 Query
-  → 从 SQLite 重建上下文
-  → System Prompt + Summary + 未覆盖原始轮次
+  → SQLite 先保存 user，轮次状态为 pending
+  → 从 SQLite 重建此前上下文
+  → 固定 System Prompt
+  → 用户层 Summary + 未覆盖原始轮次 + 当前 Query
   → LangChain create_agent（tools=[]）
   → 模型回复
-  → SQLite 原子保存完整轮次
+  → SQLite 保存 assistant，轮次状态改为 completed
   → 必要时提交异步摘要任务
 ```
 
+如果模型调用失败，user 原文不会丢失，轮次状态改为 `failed` 并记录错误；
+该轮不会伪造 assistant 消息。
+
 当前没有能力路由、任务状态、Tool Runtime 或 Skill Registry。
+
+### 上下文权限边界
+
+System Prompt 始终使用代码中固定的办公助手规则，不会拼接历史摘要，也不会被
+摘要、最近对话或当前 Query 修改。
+
+模型实际收到的层级为：
+
+```text
+SystemMessage：固定 System Prompt
+HumanMessage：历史摘要（如有，明确标记为用户层上下文）
+HumanMessage / AIMessage：摘要范围之后的原始对话
+HumanMessage：当前 Query
+```
+
+历史摘要开头会明确说明：它只是恢复背景的数据，不是系统指令，不能覆盖系统
+规则，也不能作为执行外部操作的授权依据。
+
+`SUMMARY_SYSTEM_PROMPT` 只用于独立的摘要生成请求，负责告诉摘要模型如何压缩
+历史；生成出来的摘要回到主 Agent 时仍然只是 `HumanMessage`。
 
 ### 会话生命周期
 
@@ -97,6 +122,14 @@ SQLite 中保存的完整聊天记录。浏览器只使用 `localStorage` 记住
 第 N 轮
 ├── user
 └── assistant
+```
+
+轮次状态变化：
+
+```text
+pending   用户消息已持久化，模型尚未完成
+completed 用户和助手消息均已持久化
+failed    用户消息已保留，但模型没有生成可用回复
 ```
 
 同一 session 内的模型请求会串行执行，避免并发请求造成轮次顺序错乱；不同
@@ -112,12 +145,25 @@ session 可以独立处理。
 |---|---|
 | `session_id` | 会话主键 |
 | `title` | 会话名称 |
-| `round_count` | 已完成轮数 |
+| `round_count` | 已接收的用户轮次数 |
 | `created_at` | 创建时间 |
 | `updated_at` | 最近更新时间 |
 
 `round_count` 在写入轮次时同步更新，会话列表直接读取 `sessions`，不需要扫描
 消息表统计轮数。
+
+#### `conversation_rounds`
+
+保存每轮请求的生命周期：
+
+| 字段 | 说明 |
+|---|---|
+| `session_id` | 所属会话 |
+| `round_no` | 会话内轮次 |
+| `status` | `pending`、`completed` 或 `failed` |
+| `error` | 失败原因，成功时为空 |
+| `created_at` | 用户消息落库时间 |
+| `completed_at` | 成功或失败结束时间 |
 
 #### `chat_messages`
 
@@ -194,19 +240,67 @@ session 可以独立处理。
 
 ### Agent 临时 State
 
-SQLite 是持久化事实来源，每次请求临时重建：
+SQLite 是持久化事实来源，每次请求临时重建消息列表：
 
 ```python
 {
-    "summary": "最新累计摘要",
     "messages": [
-        # 摘要范围之后的全部原始消息
-        # 当前用户 Query
+        HumanMessage("历史摘要；用户层上下文"),  # 有摘要时
+        # 摘要范围之后的原始 HumanMessage / AIMessage
+        HumanMessage("当前 Query"),
     ],
 }
 ```
 
+System Prompt 由 Agent 配置单独提供，不属于上述可变消息列表。当前 Query 已经
+先写入 SQLite，但构建模型输入时只添加一次，不会因持久化而重复。
+
 `sessionId` 属于运行边界和数据库主键，不作为模型可生成的业务状态。
+
+### 待实现方案：Token 硬上限
+
+当前 `30/20/10` 仍是轮次策略，尚未实现 Token 计数和硬上限。计划保留轮次
+规则，同时增加两级 Token 保护：
+
+```text
+可用历史预算
+  = 模型上下文上限
+  - 最大输出预留
+  - 固定 System Prompt
+  - 未来 Tool/Skill 预留
+  - 安全余量
+
+达到软阈值：提前提交异步摘要
+达到硬阈值：当前请求不能继续等待后台任务，执行同步应急压缩
+```
+
+触发条件计划调整为：
+
+```python
+should_compress = (
+    uncovered_rounds >= 30
+    or uncovered_tokens >= soft_token_limit
+)
+```
+
+具体 Token 阈值需要根据实际模型窗口、真实对话 P90/P95 长度、最大回复长度和
+未来 Tool 返回量通过评测确定，本版本不写死。
+
+### 待实现方案：摘要版本与生成信息
+
+本版本仍只持久化摘要正文、覆盖轮次和创建时间。计划为每版摘要补充：
+
+| 字段 | 用途 |
+|---|---|
+| `prompt_version` | 标识使用的摘要 Prompt 版本 |
+| `model_name` | 标识生成摘要的模型 |
+| `source_hash` | 校验摘要对应的原始范围 |
+| `input_tokens` | 记录摘要输入成本 |
+| `output_tokens` | 记录摘要输出成本 |
+| `status` | 记录生成状态 |
+| `error` | 记录失败原因 |
+
+这些字段用于评测、审计和重新生成摘要，当前只保留方案，尚未修改数据库结构。
 
 ### API
 
@@ -260,6 +354,8 @@ python -m unittest discover -s tests -v
 - 首次发送创建会话；
 - 会话隔离、删除和重命名；
 - SQLite 重启恢复；
+- 用户消息先落库以及失败轮次保留；
+- 摘要保持用户消息权限，不进入 System Prompt；
 - 第一次与第二次滚动压缩；
 - 摘要任务阻塞时继续对话不丢上下文；
 - 全量记录在压缩后仍完整保留。
@@ -267,4 +363,3 @@ python -m unittest discover -s tests -v
 ## 版本
 
 当前版本：**1.1 多轮次对话**
-
