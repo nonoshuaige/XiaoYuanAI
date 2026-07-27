@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import PrivateAttr
 
 from agent import AgentRuntime
@@ -50,6 +50,30 @@ class BlockingSummaryModel:
         if not self.release.wait(timeout=5):
             raise TimeoutError("test did not release summary model")
         return AIMessage(content=self.response)
+
+
+class FailingAfterPersistenceModel(FakeListChatModel):
+    _store: ConversationStore = PrivateAttr()
+    _session_id: str = PrivateAttr()
+    _saw_persisted_user: bool = PrivateAttr(default=False)
+
+    def __init__(self, store, session_id):
+        super().__init__(responses=["unused"])
+        self._store = store
+        self._session_id = session_id
+
+    @property
+    def saw_persisted_user(self):
+        return self._saw_persisted_user
+
+    def _call(self, *args, **kwargs):
+        messages = self._store.get_messages(self._session_id)
+        self._saw_persisted_user = bool(
+            messages
+            and messages[-1]["role"] == "user"
+            and messages[-1]["status"] == "pending"
+        )
+        raise RuntimeError("模拟模型失败")
 
 
 class AgentRuntimeTests(unittest.TestCase):
@@ -97,6 +121,10 @@ class AgentRuntimeTests(unittest.TestCase):
             ],
         )
         self.assertEqual(reopened.get_session("persistent")["title"], "你好")
+        self.assertEqual(
+            reopened.get_round("persistent", 1)["status"],
+            "completed",
+        )
 
     def test_session_is_created_on_first_send_and_can_be_renamed(self):
         self.assertEqual(self.store.list_sessions(), [])
@@ -148,6 +176,72 @@ class AgentRuntimeTests(unittest.TestCase):
             runtime.chat("../bad", "你好")
         with self.assertRaises(ValueError):
             runtime.chat("valid", "   ")
+
+    def test_user_message_is_persisted_before_model_call_and_kept_on_failure(self):
+        model = FailingAfterPersistenceModel(self.store, "failed-turn")
+        runtime = self.make_runtime(model)
+
+        with self.assertRaisesRegex(RuntimeError, "模拟模型失败"):
+            runtime.chat("failed-turn", "这条消息必须先保存")
+
+        self.assertTrue(model.saw_persisted_user)
+        self.assertEqual(
+            [
+                (
+                    message["round"],
+                    message["role"],
+                    message["content"],
+                    message["status"],
+                )
+                for message in self.store.get_messages("failed-turn")
+            ],
+            [(1, "user", "这条消息必须先保存", "failed")],
+        )
+        failed_round = self.store.get_round("failed-turn", 1)
+        self.assertEqual(failed_round["status"], "failed")
+        self.assertIn("模拟模型失败", failed_round["error"])
+
+    def test_summary_is_user_context_and_never_changes_system_prompt(self):
+        for index in range(1, 21):
+            self.store.append_round(
+                "summary-role",
+                f"历史问题 {index}",
+                f"历史回复 {index}",
+            )
+        self.assertTrue(
+            self.store.save_summary(
+                session_id="summary-role",
+                content="用户最终选择蓝色方案",
+                expected_previous_end=0,
+                end_round=20,
+            )
+        )
+        model = RecordingFakeChatModel(responses=["继续回复"])
+        runtime = self.make_runtime(model)
+
+        runtime.chat("summary-role", "继续处理")
+
+        model_call = model.recorded_calls[-1]
+        system_contents = [
+            message.content
+            for message in model_call
+            if isinstance(message, SystemMessage)
+        ]
+        human_contents = [
+            message.content
+            for message in model_call
+            if isinstance(message, HumanMessage)
+        ]
+        self.assertTrue(system_contents)
+        self.assertFalse(
+            any("用户最终选择蓝色方案" in content for content in system_contents)
+        )
+        self.assertEqual(
+            sum("用户最终选择蓝色方案" in content for content in human_contents),
+            1,
+        )
+        self.assertIn("用户层上下文", human_contents[0])
+        self.assertEqual(human_contents.count("继续处理"), 1)
 
     def test_rolls_summary_forward_and_keeps_full_history(self):
         chat_model = FakeListChatModel(

@@ -61,6 +61,22 @@ class ConversationStore:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS conversation_rounds (
+                    session_id TEXT NOT NULL,
+                    round_no INTEGER NOT NULL,
+                    status TEXT NOT NULL
+                        CHECK (status IN ('pending', 'completed', 'failed')),
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    PRIMARY KEY (session_id, round_no),
+                    FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+                        ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_rounds_session_status
+                ON conversation_rounds(session_id, status, round_no);
+
                 CREATE TABLE IF NOT EXISTS chat_messages (
                     session_id TEXT NOT NULL,
                     round_no INTEGER NOT NULL,
@@ -161,6 +177,48 @@ class ConversationStore:
                     "DELETE FROM sessions WHERE round_count = 0"
                 )
                 connection.execute("PRAGMA user_version = 2")
+            if schema_version < 3:
+                connection.execute(
+                    """
+                    INSERT INTO conversation_rounds(
+                        session_id,
+                        round_no,
+                        status,
+                        error,
+                        created_at,
+                        completed_at
+                    )
+                    SELECT
+                        m.session_id,
+                        m.round_no,
+                        CASE
+                            WHEN SUM(
+                                CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END
+                            ) > 0
+                            THEN 'completed'
+                            ELSE 'failed'
+                        END,
+                        CASE
+                            WHEN SUM(
+                                CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END
+                            ) > 0
+                            THEN NULL
+                            ELSE '历史轮次缺少助手回复'
+                        END,
+                        MIN(m.created_at),
+                        CASE
+                            WHEN SUM(
+                                CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END
+                            ) > 0
+                            THEN MAX(m.created_at)
+                            ELSE NULL
+                        END
+                    FROM chat_messages AS m
+                    GROUP BY m.session_id, m.round_no
+                    ON CONFLICT(session_id, round_no) DO NOTHING
+                    """
+                )
+                connection.execute("PRAGMA user_version = 3")
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         session_id = self.validate_session_id(session_id)
@@ -220,13 +278,12 @@ class ConversationStore:
             )
         return self.get_session(session_id) if cursor.rowcount else None
 
-    def append_round(
+    def begin_round(
         self,
         session_id: str,
         user_content: str,
-        assistant_content: str,
     ) -> int:
-        """Atomically append one complete user/assistant round."""
+        """Persist the user message before any model request starts."""
         session_id = self.validate_session_id(session_id)
         now = datetime.now().isoformat()
         with self._write_lock, self._connect() as connection:
@@ -241,6 +298,17 @@ class ConversationStore:
                 """,
                 (session_id, now, now),
             )
+            connection.execute(
+                """
+                UPDATE conversation_rounds
+                SET
+                    status = 'failed',
+                    error = COALESCE(error, '上一轮请求已中断'),
+                    completed_at = ?
+                WHERE session_id = ? AND status = 'pending'
+                """,
+                (now, session_id),
+            )
             row = connection.execute(
                 """
                 SELECT round_count + 1 AS next_round
@@ -250,22 +318,26 @@ class ConversationStore:
                 (session_id,),
             ).fetchone()
             round_no = int(row["next_round"])
-            connection.executemany(
+            connection.execute(
+                """
+                INSERT INTO conversation_rounds(
+                    session_id,
+                    round_no,
+                    status,
+                    error,
+                    created_at,
+                    completed_at
+                ) VALUES (?, ?, 'pending', NULL, ?, NULL)
+                """,
+                (session_id, round_no, now),
+            )
+            connection.execute(
                 """
                 INSERT INTO chat_messages(
                     session_id, round_no, role, content, created_at
                 ) VALUES (?, ?, ?, ?, ?)
                 """,
-                [
-                    (session_id, round_no, "user", user_content, now),
-                    (
-                        session_id,
-                        round_no,
-                        "assistant",
-                        assistant_content,
-                        now,
-                    ),
-                ],
+                (session_id, round_no, "user", user_content, now),
             )
             connection.execute(
                 """
@@ -289,6 +361,106 @@ class ConversationStore:
             )
         return round_no
 
+    def complete_round(
+        self,
+        session_id: str,
+        round_no: int,
+        assistant_content: str,
+    ) -> None:
+        """Append the assistant reply and close a previously pending round."""
+        session_id = self.validate_session_id(session_id)
+        now = datetime.now().isoformat()
+        with self._write_lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT status
+                FROM conversation_rounds
+                WHERE session_id = ? AND round_no = ?
+                """,
+                (session_id, round_no),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("待完成的对话轮次不存在")
+            if row["status"] != "pending":
+                raise RuntimeError(
+                    f"对话轮次无法完成，当前状态为 {row['status']}"
+                )
+            connection.execute(
+                """
+                INSERT INTO chat_messages(
+                    session_id, round_no, role, content, created_at
+                ) VALUES (?, ?, 'assistant', ?, ?)
+                """,
+                (session_id, round_no, assistant_content, now),
+            )
+            connection.execute(
+                """
+                UPDATE conversation_rounds
+                SET
+                    status = 'completed',
+                    error = NULL,
+                    completed_at = ?
+                WHERE session_id = ? AND round_no = ?
+                """,
+                (now, session_id, round_no),
+            )
+            connection.execute(
+                """
+                UPDATE sessions
+                SET updated_at = ?
+                WHERE session_id = ?
+                """,
+                (now, session_id),
+            )
+
+    def fail_round(
+        self,
+        session_id: str,
+        round_no: int,
+        error: str,
+    ) -> bool:
+        """Keep the user message and mark the unfinished model turn as failed."""
+        session_id = self.validate_session_id(session_id)
+        now = datetime.now().isoformat()
+        error_text = error.strip()[:2_000] or "模型请求失败"
+        with self._write_lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE conversation_rounds
+                SET
+                    status = 'failed',
+                    error = ?,
+                    completed_at = ?
+                WHERE
+                    session_id = ?
+                    AND round_no = ?
+                    AND status = 'pending'
+                """,
+                (error_text, now, session_id, round_no),
+            )
+            if cursor.rowcount:
+                connection.execute(
+                    """
+                    UPDATE sessions
+                    SET updated_at = ?
+                    WHERE session_id = ?
+                    """,
+                    (now, session_id),
+                )
+        return cursor.rowcount > 0
+
+    def append_round(
+        self,
+        session_id: str,
+        user_content: str,
+        assistant_content: str,
+    ) -> int:
+        """Compatibility helper for atomically observable completed rounds."""
+        round_no = self.begin_round(session_id, user_content)
+        self.complete_round(session_id, round_no, assistant_content)
+        return round_no
+
     def get_messages(
         self,
         session_id: str,
@@ -296,21 +468,30 @@ class ConversationStore:
         after_round: int = 0,
         through_round: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Read complete transcript rows in stable user-then-assistant order."""
+        """Read stored messages in stable user-then-assistant order."""
         session_id = self.validate_session_id(session_id)
         query = """
-            SELECT round_no, role, content, created_at
-            FROM chat_messages
-            WHERE session_id = ? AND round_no > ?
+            SELECT
+                m.round_no,
+                m.role,
+                m.content,
+                m.created_at,
+                COALESCE(r.status, 'completed') AS status,
+                r.error
+            FROM chat_messages AS m
+            LEFT JOIN conversation_rounds AS r
+                ON r.session_id = m.session_id
+                AND r.round_no = m.round_no
+            WHERE m.session_id = ? AND m.round_no > ?
         """
         parameters: list[Any] = [session_id, after_round]
         if through_round is not None:
-            query += " AND round_no <= ?"
+            query += " AND m.round_no <= ?"
             parameters.append(through_round)
         query += """
             ORDER BY
-                round_no,
-                CASE role WHEN 'user' THEN 0 ELSE 1 END
+                m.round_no,
+                CASE m.role WHEN 'user' THEN 0 ELSE 1 END
         """
         with self._connect() as connection:
             rows = connection.execute(query, parameters).fetchall()
@@ -320,6 +501,8 @@ class ConversationStore:
                 "role": row["role"],
                 "content": row["content"],
                 "created_at": row["created_at"],
+                "status": row["status"],
+                "error": row["error"],
             }
             for row in rows
         ]
@@ -329,13 +512,43 @@ class ConversationStore:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT COALESCE(MAX(round_no), 0) AS latest_round
-                FROM chat_messages
+                SELECT round_count AS latest_round
+                FROM sessions
                 WHERE session_id = ?
                 """,
                 (session_id,),
             ).fetchone()
-        return int(row["latest_round"])
+        return int(row["latest_round"]) if row else 0
+
+    def get_round(
+        self,
+        session_id: str,
+        round_no: int,
+    ) -> dict[str, Any] | None:
+        session_id = self.validate_session_id(session_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    round_no,
+                    status,
+                    error,
+                    created_at,
+                    completed_at
+                FROM conversation_rounds
+                WHERE session_id = ? AND round_no = ?
+                """,
+                (session_id, round_no),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "round": int(row["round_no"]),
+            "status": row["status"],
+            "error": row["error"],
+            "created_at": row["created_at"],
+            "completed_at": row["completed_at"],
+        }
 
     def get_latest_summary(
         self,
