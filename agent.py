@@ -23,6 +23,7 @@ from conversation_store import (
     ConversationSummary,
     conversation_store,
 )
+from model_audit import capture_model_call, serialize_ai_message
 
 
 SYSTEM_PROMPT = """你是小原 AI 助手，一个面向中文办公场景的智能助手。
@@ -261,31 +262,53 @@ class AgentRuntime:
         # and never holds this lock.
         with self._session_lock(session_id):
             round_no = self.store.begin_round(session_id, message)
-            try:
-                summary, uncovered_messages = self._load_model_context(
-                    session_id,
-                    through_round=round_no - 1,
-                )
-                model_messages: list[BaseMessage] = []
-                if summary:
-                    model_messages.append(_summary_context_message(summary.content))
-                model_messages.extend(_to_langchain_messages(uncovered_messages))
-                model_messages.append(HumanMessage(content=message))
-                result = graph.invoke({"messages": model_messages})
-                reply = _last_reply(result["messages"])
-                self.store.complete_round(session_id, round_no, reply)
-            except Exception as exc:
+            with capture_model_call(selected_model_id) as capture:
                 try:
-                    self.store.fail_round(
+                    summary, uncovered_messages = self._load_model_context(
+                        session_id,
+                        through_round=round_no - 1,
+                    )
+                    model_messages: list[BaseMessage] = []
+                    if summary:
+                        model_messages.append(
+                            _summary_context_message(summary.content)
+                        )
+                    model_messages.extend(
+                        _to_langchain_messages(uncovered_messages)
+                    )
+                    model_messages.append(HumanMessage(content=message))
+                    result = graph.invoke({"messages": model_messages})
+                    ai_message = _last_ai_message(result["messages"])
+                    reply = _content_text(ai_message.content).strip()
+                    self.store.complete_round(
                         session_id,
                         round_no,
-                        f"{type(exc).__name__}: {exc}",
+                        reply,
+                        model_call={
+                            "model_id": selected_model_id,
+                            "provider_responses": capture.provider_responses,
+                            "langchain_ai_message": serialize_ai_message(
+                                ai_message
+                            ),
+                        },
                     )
-                    self.summary_manager.request(session_id)
-                except Exception:
-                    # Preserve the original model/runtime exception for the caller.
-                    pass
-                raise
+                except Exception as exc:
+                    try:
+                        self.store.fail_round(
+                            session_id,
+                            round_no,
+                            f"{type(exc).__name__}: {exc}",
+                            model_call={
+                                "model_id": selected_model_id,
+                                "provider_responses": capture.provider_responses,
+                                "langchain_ai_message": None,
+                            },
+                        )
+                        self.summary_manager.request(session_id)
+                    except Exception:
+                        # Preserve the original model/runtime exception.
+                        pass
+                    raise
 
         self.summary_manager.request(session_id)
         return AgentResponse(
@@ -367,7 +390,7 @@ class AgentRuntime:
                 model=self._get_model(model_id),
                 tools=[],
                 system_prompt=SYSTEM_PROMPT,
-                name=f"xiaoyuan-{model_id}",
+                name=_agent_graph_name(model_id),
             )
             self.graphs[model_id] = graph
             return graph
@@ -453,12 +476,12 @@ def _contains_closed_rounds(
     )
 
 
-def _last_reply(messages: list[BaseMessage]) -> str:
+def _last_ai_message(messages: list[BaseMessage]) -> AIMessage:
     for message in reversed(messages):
         if isinstance(message, AIMessage):
             text = _content_text(message.content).strip()
             if text:
-                return text
+                return message
     raise RuntimeError("模型没有返回可用文本")
 
 
@@ -497,3 +520,12 @@ def _content_text(content: Any) -> str:
     if isinstance(content, (dict, tuple)):
         return json.dumps(content, ensure_ascii=False)
     return str(content)
+
+
+def _agent_graph_name(model_id: str) -> str:
+    """Convert provider-qualified model IDs into a safe graph name."""
+    safe_model_id = "".join(
+        character if character.isalnum() or character in "_-" else "-"
+        for character in model_id
+    )
+    return f"xiaoyuan-{safe_model_id[:80]}"

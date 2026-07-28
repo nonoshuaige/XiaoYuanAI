@@ -28,7 +28,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8_000)
-    model: str | None = Field(default=None, min_length=1, max_length=64)
+    model: str | None = Field(default=None, min_length=1, max_length=256)
     session_id: str | None = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -81,6 +81,10 @@ async def chat_endpoint(request: ChatRequest):
         "round": response.round_no,
         "title": conversation_store.get_session(response.session_id)["title"],
         "model": response.model_id,
+        "modelCallUrl": (
+            f"/api/sessions/{response.session_id}/rounds/"
+            f"{response.round_no}/model-call"
+        ),
     }
 
 
@@ -102,6 +106,34 @@ async def session_context(session_id: str):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"sessionId": session_id, **context}
+
+
+@app.get("/api/sessions/{session_id}/model-calls")
+async def session_model_calls(session_id: str):
+    """Return the full model-call audit trail for one session."""
+    try:
+        if conversation_store.get_session(session_id) is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        return conversation_store.get_model_calls(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/sessions/{session_id}/rounds/{round_no}/model-call")
+async def round_model_call(session_id: str, round_no: int):
+    """Return Provider HTTP data and the converted LangChain AIMessage."""
+    try:
+        if conversation_store.get_session(session_id) is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        model_calls = conversation_store.get_model_calls(
+            session_id,
+            round_no=round_no,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not model_calls:
+        raise HTTPException(status_code=404, detail="model call audit not found")
+    return model_calls[0]
 
 
 @app.patch("/api/sessions/{session_id}")

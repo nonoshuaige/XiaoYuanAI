@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from openai import OpenAI
 
+from model_audit import create_audited_http_client
+
 
 load_dotenv()
 
@@ -47,9 +49,17 @@ QWEN3D_PROVIDER = ProviderSpec(
     base_url_env="QWEN3D6_API_BASE",
     default_base_url="http://40.19.92.194:9080/aip-qwen3d6-27b-fp8/v1",
 )
+OLLAMA_PROVIDER = ProviderSpec(
+    id="ollama",
+    label="Ollama 本地",
+    api_key_env="OLLAMA_API_KEY",
+    base_url_env="OLLAMA_API_BASE",
+    default_base_url="http://127.0.0.1:11434/v1/",
+)
 
 DEFAULT_CODER_MODEL = os.getenv("MODEL_NAME", "qwen3-coder-plus")
 QWEN3D_MODEL = os.getenv("QWEN3D6_MODEL_NAME", "qwen3d6-27b")
+OLLAMA_MODEL_ID_PREFIX = "ollama::"
 _configured_default = os.getenv("DEFAULT_MODEL_ID", DEFAULT_CODER_MODEL)
 DEFAULT_MODEL_ID = (
     DEFAULT_CODER_MODEL
@@ -73,16 +83,19 @@ CODER_MODEL_FALLBACKS = (
     "qwen3.7-plus",
 )
 MODEL_CATALOG_TTL_SECONDS = 300
+OLLAMA_CATALOG_TTL_SECONDS = 30
 _catalog_lock = threading.Lock()
 _coder_catalog_cache: ModelCatalog | None = None
 _coder_model_cache_time = 0.0
+_ollama_catalog_cache: ModelCatalog | None = None
+_ollama_model_cache_time = 0.0
 
 
 def get_model_options(
     *,
     refresh: bool = False,
 ) -> list[dict[str, str | bool]]:
-    """Return only models whose provider is currently configured.
+    """Return models from configured remote providers and reachable local ones.
 
     ``discovered`` means the model was observed from the provider's catalog.
     ``callable`` means the server has enough provider configuration to accept a
@@ -121,6 +134,22 @@ def get_model_options(
                 "source": "configured",
             }
         )
+
+    ollama_catalog = _discover_ollama_catalog(refresh=refresh)
+    options.extend(
+        {
+            "id": f"{OLLAMA_MODEL_ID_PREFIX}{model_name}",
+            "label": model_name,
+            "model": model_name,
+            "provider": OLLAMA_PROVIDER.label,
+            "providerId": OLLAMA_PROVIDER.id,
+            "default": False,
+            "discovered": True,
+            "callable": True,
+            "source": ollama_catalog.source,
+        }
+        for model_name in ollama_catalog.models
+    )
 
     if options:
         default_id = (
@@ -205,6 +234,49 @@ def _discover_coder_catalog(*, refresh: bool = False) -> ModelCatalog:
         return _coder_catalog_cache
 
 
+def _discover_ollama_catalog(*, refresh: bool = False) -> ModelCatalog:
+    """Return locally installed Ollama models when its API is reachable."""
+    global _ollama_catalog_cache, _ollama_model_cache_time
+    now = time.monotonic()
+    with _catalog_lock:
+        if (
+            not refresh
+            and _ollama_catalog_cache is not None
+            and now - _ollama_model_cache_time < OLLAMA_CATALOG_TTL_SECONDS
+        ):
+            return _ollama_catalog_cache
+
+        try:
+            client = OpenAI(
+                api_key=_provider_api_key(OLLAMA_PROVIDER),
+                base_url=_provider_base_url(OLLAMA_PROVIDER),
+                timeout=2,
+                max_retries=0,
+            )
+            discovered = tuple(
+                sorted(
+                    {
+                        model.id.strip()
+                        for model in client.models.list().data
+                        if model.id and model.id.strip()
+                    }
+                )
+            )
+            _ollama_catalog_cache = ModelCatalog(
+                models=discovered,
+                discovered_models=frozenset(discovered),
+                source="live",
+            )
+        except Exception:
+            _ollama_catalog_cache = ModelCatalog(
+                models=(),
+                discovered_models=frozenset(),
+                source="unavailable",
+            )
+        _ollama_model_cache_time = now
+        return _ollama_catalog_cache
+
+
 def get_default_model_id() -> str:
     """Resolve the configured default, falling back to the first callable model."""
     options = get_model_options()
@@ -212,7 +284,7 @@ def get_default_model_id() -> str:
         if option["default"]:
             return str(option["id"])
     raise RuntimeError(
-        "没有可调用模型，请至少配置一个 Provider 的 API Key"
+        "没有可调用模型，请配置远程 Provider API Key 或启动本地 Ollama"
     )
 
 
@@ -234,14 +306,19 @@ def get_llm(model_id: str = DEFAULT_MODEL_ID) -> ChatOpenAI:
         provider = QWEN3D_PROVIDER
     elif option["providerId"] == CODER_PROVIDER.id:
         provider = CODER_PROVIDER
+    elif option["providerId"] == OLLAMA_PROVIDER.id:
+        provider = OLLAMA_PROVIDER
     else:
         raise ValueError(f"模型 Provider 不受支持：{option['providerId']}")
 
     return ChatOpenAI(
-        model=selected_model,
+        model=str(option["model"]),
         api_key=_provider_api_key(provider),
         base_url=_provider_base_url(provider),
         temperature=0.7,
+        http_client=create_audited_http_client(provider.id),
+        # Preserve the client's response hook and normal proxy auto-detection.
+        http_socket_options=(),
     )
 
 
@@ -270,6 +347,8 @@ def _provider_api_key(
     api_key = os.getenv(provider.api_key_env)
     if not api_key and provider == CODER_PROVIDER:
         api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key and provider == OLLAMA_PROVIDER:
+        api_key = "ollama"
     api_key = api_key.strip() if api_key else ""
     if not api_key and required:
         raise RuntimeError(

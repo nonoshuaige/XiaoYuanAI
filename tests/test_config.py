@@ -8,6 +8,21 @@ import config
 
 
 class ModelConfigTests(unittest.TestCase):
+    def setUp(self):
+        self.ollama_catalog_patcher = patch.object(
+            config,
+            "_discover_ollama_catalog",
+            return_value=config.ModelCatalog(
+                models=(),
+                discovered_models=frozenset(),
+                source="unavailable",
+            ),
+        )
+        self.ollama_catalog_patcher.start()
+
+    def tearDown(self):
+        self.ollama_catalog_patcher.stop()
+
     def test_coder_model_uses_coding_plan_provider(self):
         with (
             patch.object(
@@ -106,6 +121,62 @@ class ModelConfigTests(unittest.TestCase):
             config.QWEN3D_PROVIDER.id,
         )
         self.assertTrue(options[0]["default"])
+
+    def test_ollama_models_are_discovered_without_an_api_key(self):
+        with (
+            patch.object(
+                config,
+                "_discover_ollama_catalog",
+                return_value=config.ModelCatalog(
+                    models=("gemma4:12b", "qwen3.5:9b"),
+                    discovered_models=frozenset(
+                        {"gemma4:12b", "qwen3.5:9b"}
+                    ),
+                    source="live",
+                ),
+            ),
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            options = config.get_model_options()
+
+        self.assertEqual(
+            [option["id"] for option in options],
+            ["ollama::gemma4:12b", "ollama::qwen3.5:9b"],
+        )
+        self.assertTrue(all(option["callable"] for option in options))
+        self.assertTrue(all(option["discovered"] for option in options))
+        self.assertEqual(
+            {option["providerId"] for option in options},
+            {config.OLLAMA_PROVIDER.id},
+        )
+
+    def test_ollama_model_uses_local_openai_compatible_endpoint(self):
+        option = {
+            "id": "ollama::gemma4:12b",
+            "label": "gemma4:12b",
+            "model": "gemma4:12b",
+            "provider": config.OLLAMA_PROVIDER.label,
+            "providerId": config.OLLAMA_PROVIDER.id,
+            "default": True,
+            "discovered": True,
+            "callable": True,
+            "source": "live",
+        }
+        with (
+            patch.object(config, "get_model_options", return_value=[option]),
+            patch.dict(
+                os.environ,
+                {"OLLAMA_API_BASE": "http://localhost:11434/v1/"},
+                clear=True,
+            ),
+        ):
+            model = config.get_llm("ollama::gemma4:12b")
+
+        self.assertEqual(model.model_name, "gemma4:12b")
+        self.assertEqual(
+            str(model.openai_api_base),
+            "http://localhost:11434/v1/",
+        )
 
     def test_unknown_model_is_rejected(self):
         with (

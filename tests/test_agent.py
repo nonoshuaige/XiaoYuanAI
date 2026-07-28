@@ -5,6 +5,9 @@ import threading
 import unittest
 from pathlib import Path
 
+from langchain_core.language_models.fake_chat_models import (
+    FakeMessagesListChatModel,
+)
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import PrivateAttr
@@ -236,6 +239,53 @@ class AgentRuntimeTests(unittest.TestCase):
             {"default-model", "alternate-model"},
         )
 
+    def test_persists_complete_langchain_ai_message_for_each_round(self):
+        rich_message = AIMessage(
+            content="带审计信息的回复",
+            additional_kwargs={
+                "reasoning_content": "内部推理字段",
+                "provider_extension": {"trace": "trace-1"},
+            },
+            response_metadata={
+                "finish_reason": "stop",
+                "model_name": "audit-model",
+                "token_usage": {
+                    "prompt_tokens": 11,
+                    "completion_tokens": 7,
+                    "total_tokens": 18,
+                },
+            },
+            id="run-audit-1",
+            usage_metadata={
+                "input_tokens": 11,
+                "output_tokens": 7,
+                "total_tokens": 18,
+            },
+        )
+        runtime = self.make_runtime(
+            FakeMessagesListChatModel(responses=[rich_message])
+        )
+
+        runtime.chat("audit-session", "记录完整响应")
+
+        calls = self.store.get_model_calls("audit-session")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["modelId"], "default")
+        self.assertEqual(calls[0]["status"], "completed")
+        self.assertEqual(calls[0]["providerResponses"], [])
+        converted = calls[0]["langchainAIMessage"]
+        self.assertEqual(converted["content"], "带审计信息的回复")
+        self.assertEqual(
+            converted["additional_kwargs"]["reasoning_content"],
+            "内部推理字段",
+        )
+        self.assertEqual(
+            converted["response_metadata"]["finish_reason"],
+            "stop",
+        )
+        self.assertEqual(converted["usage_metadata"]["total_tokens"], 18)
+        self.assertEqual(converted["id"], "run-audit-1")
+
     def test_user_message_is_persisted_before_model_call_and_kept_on_failure(self):
         model = FailingAfterPersistenceModel(self.store, "failed-turn")
         runtime = self.make_runtime(model)
@@ -259,6 +309,11 @@ class AgentRuntimeTests(unittest.TestCase):
         failed_round = self.store.get_round("failed-turn", 1)
         self.assertEqual(failed_round["status"], "failed")
         self.assertIn("模拟模型失败", failed_round["error"])
+        failed_calls = self.store.get_model_calls("failed-turn")
+        self.assertEqual(len(failed_calls), 1)
+        self.assertEqual(failed_calls[0]["status"], "failed")
+        self.assertIsNone(failed_calls[0]["langchainAIMessage"])
+        self.assertIn("模拟模型失败", failed_calls[0]["error"])
 
     def test_summary_is_user_context_and_never_changes_system_prompt(self):
         for index in range(1, 21):

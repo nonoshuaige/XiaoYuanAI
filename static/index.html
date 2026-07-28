@@ -146,6 +146,8 @@
     .chat-header h1 { margin: 0; font-size: 18px; }
     .chat-header p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
     .model-picker {
+      position: relative;
+      z-index: 40;
       display: flex;
       align-items: center;
       gap: 8px;
@@ -153,19 +155,189 @@
       font-size: 12px;
       white-space: nowrap;
     }
-    .model-picker select {
-      max-width: 210px;
-      height: 36px;
-      padding: 0 32px 0 11px;
+    .model-trigger {
+      min-width: 210px;
+      max-width: 280px;
+      height: 40px;
+      padding: 0 11px 0 13px;
       border: 1px solid var(--line);
-      border-radius: 10px;
-      outline: none;
+      border-radius: 12px;
       color: var(--ink);
       background: white;
       font: inherit;
       cursor: pointer;
+      display: grid;
+      grid-template-columns: minmax(0, auto) auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 7px;
+      text-align: left;
+      transition:
+        border-color .18s ease,
+        background-color .18s ease,
+        transform .18s cubic-bezier(.16, 1, .3, 1);
     }
-    .model-picker select:focus { border-color: var(--blue); }
+    .model-trigger:hover {
+      border-color: #c6d3e8;
+      background: #fbfcff;
+    }
+    .model-trigger:active { transform: scale(.98); }
+    .model-trigger:focus-visible,
+    .provider-button:focus-visible,
+    .model-option:focus-visible {
+      outline: 2px solid var(--blue);
+      outline-offset: 2px;
+    }
+    .current-provider {
+      overflow: hidden;
+      color: var(--muted);
+      text-overflow: ellipsis;
+    }
+    .model-separator { color: #b8c0cf; }
+    .current-model {
+      overflow: hidden;
+      font-weight: 650;
+      text-overflow: ellipsis;
+    }
+    .model-trigger-chevron {
+      width: 15px;
+      height: 15px;
+      transition: transform .18s cubic-bezier(.16, 1, .3, 1);
+    }
+    .model-trigger[aria-expanded="true"] .model-trigger-chevron {
+      transform: rotate(180deg);
+    }
+    .model-menu,
+    .model-submenu {
+      padding: 6px;
+      border: 1px solid rgba(216, 224, 237, .96);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, .98);
+      box-shadow: 0 18px 50px rgba(29, 42, 70, .16);
+      backdrop-filter: blur(16px);
+    }
+    .model-menu {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 248px;
+      width: 190px;
+    }
+    .provider-item {
+      position: relative;
+    }
+    .provider-item::after {
+      position: absolute;
+      top: 0;
+      right: -10px;
+      width: 10px;
+      height: 100%;
+      content: "";
+    }
+    .provider-button,
+    .model-option {
+      width: 100%;
+      border: 0;
+      border-radius: 9px;
+      color: var(--ink);
+      background: transparent;
+      font: inherit;
+      text-align: left;
+    }
+    .provider-button {
+      min-height: 44px;
+      padding: 8px 9px;
+      display: grid;
+      grid-template-columns: 8px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 9px;
+    }
+    .provider-item.active > .provider-button,
+    .provider-item:hover > .provider-button,
+    .provider-item:focus-within > .provider-button {
+      color: var(--blue);
+      background: var(--blue-soft);
+    }
+    .provider-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #63a36f;
+      box-shadow: 0 0 0 3px rgba(99, 163, 111, .12);
+    }
+    .provider-copy {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
+    .provider-name {
+      overflow: hidden;
+      font-size: 12px;
+      font-weight: 700;
+      text-overflow: ellipsis;
+    }
+    .provider-count {
+      color: var(--muted);
+      font-size: 10px;
+    }
+    .provider-chevron {
+      width: 14px;
+      height: 14px;
+      transition: transform .18s cubic-bezier(.16, 1, .3, 1);
+    }
+    .model-submenu {
+      position: absolute;
+      top: -6px;
+      left: calc(100% + 8px);
+      width: 240px;
+      max-height: min(420px, calc(100vh - 120px));
+      overflow-y: auto;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(-6px);
+      transition:
+        opacity .14s ease,
+        transform .18s cubic-bezier(.16, 1, .3, 1);
+    }
+    .provider-item.active > .model-submenu,
+    .provider-item:hover > .model-submenu,
+    .provider-item:focus-within > .model-submenu {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateX(0);
+    }
+    .model-option {
+      min-height: 44px;
+      padding: 8px 10px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 9px;
+    }
+    .model-option:hover,
+    .model-option.selected {
+      color: var(--blue);
+      background: var(--blue-soft);
+    }
+    .model-option-name {
+      overflow: hidden;
+      font-size: 12px;
+      font-weight: 620;
+      text-overflow: ellipsis;
+    }
+    .model-option-status {
+      color: var(--muted);
+      font-size: 9px;
+    }
+    .model-option.selected .model-option-status {
+      color: var(--blue);
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .model-trigger,
+      .model-trigger-chevron,
+      .provider-chevron,
+      .model-submenu {
+        transition: none;
+      }
+    }
     .messages {
       min-height: 0;
       overflow-y: auto;
@@ -325,8 +497,39 @@
       .bubble { max-width: 88%; }
       .chat-header { padding: 13px 16px; }
       .chat-header p { display: none; }
-      .model-picker span { display: none; }
-      .model-picker select { max-width: 150px; }
+      .model-caption { display: none; }
+      .model-trigger {
+        min-width: 0;
+        max-width: min(210px, 58vw);
+      }
+      .model-menu {
+        position: fixed;
+        top: 70px;
+        right: 12px;
+        left: 12px;
+        width: auto;
+        max-height: calc(100dvh - 88px);
+        overflow-y: auto;
+      }
+      .provider-item::after { display: none; }
+      .model-submenu {
+        position: static;
+        display: none;
+        width: auto;
+        max-height: 260px;
+        margin: 2px 4px 7px 18px;
+        box-shadow: none;
+        opacity: 1;
+        pointer-events: auto;
+        transform: none;
+      }
+      .provider-item.active > .model-submenu,
+      .provider-item:focus-within > .model-submenu {
+        display: block;
+      }
+      .provider-item.active .provider-chevron {
+        transform: rotate(90deg);
+      }
     }
   </style>
 </head>
@@ -345,10 +548,42 @@
         <h1 id="chatTitle">新对话</h1>
         <p>小原 AI 助手 · 对话已保存在本地</p>
       </div>
-      <label class="model-picker">
-        <span>模型</span>
-        <select id="modelSelect" aria-label="选择对话模型"></select>
-      </label>
+      <div class="model-picker" id="modelPicker">
+        <span class="model-caption">模型</span>
+        <button
+          class="model-trigger"
+          id="modelTrigger"
+          type="button"
+          aria-haspopup="menu"
+          aria-expanded="false"
+          aria-controls="modelMenu"
+        >
+          <span class="current-provider" id="currentProvider">加载中</span>
+          <span class="model-separator" aria-hidden="true">/</span>
+          <span class="current-model" id="currentModel">模型目录</span>
+          <svg
+            class="model-trigger-chevron"
+            viewBox="0 0 16 16"
+            fill="none"
+            aria-hidden="true"
+          >
+            <path
+              d="m4 6 4 4 4-4"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+        <div
+          class="model-menu"
+          id="modelMenu"
+          role="menu"
+          aria-label="按 Provider 选择模型"
+          hidden
+        ></div>
+      </div>
     </header>
     <section class="messages" id="messages">
       <div class="welcome">你好，我是小原。现在可以直接和我对话。</div>
@@ -391,7 +626,11 @@
   const form = document.querySelector("#composer");
   const input = document.querySelector("#input");
   const sendButton = document.querySelector("#send");
-  const modelSelect = document.querySelector("#modelSelect");
+  const modelPicker = document.querySelector("#modelPicker");
+  const modelTrigger = document.querySelector("#modelTrigger");
+  const modelMenu = document.querySelector("#modelMenu");
+  const currentProvider = document.querySelector("#currentProvider");
+  const currentModel = document.querySelector("#currentModel");
   const deleteModal = document.querySelector("#deleteModal");
   const deleteSessionName = document.querySelector("#deleteSessionName");
   const deleteModalError = document.querySelector("#deleteModalError");
@@ -400,6 +639,7 @@
 
   let sessions = [];
   let modelOptions = [];
+  let selectedModelId = null;
   let currentSessionId = localStorage.getItem(currentSessionKey);
   let sending = false;
   let pendingDeleteSession = null;
@@ -513,22 +753,219 @@
     const selected = modelOptions.find(model => model.id === savedModel)
       || modelOptions.find(model => model.default)
       || modelOptions[0];
-    modelSelect.replaceChildren();
-    for (const model of modelOptions) {
-      const option = document.createElement("option");
-      option.value = model.id;
-      const status = model.discovered
-        ? (model.source === "cached" ? "缓存发现" : "已发现")
-        : (model.source === "fallback" ? "兜底目录" : "已配置");
-      option.textContent = `${model.provider} · ${model.label} · ${status}`;
-      modelSelect.appendChild(option);
-    }
-    modelSelect.value = selected.id;
-    localStorage.setItem(selectedModelKey, selected.id);
+    selectedModelId = selected.id;
+    renderModelMenu();
+    selectModel(selected.id);
   }
 
-  modelSelect.addEventListener("change", () => {
-    localStorage.setItem(selectedModelKey, modelSelect.value);
+  function renderModelMenu() {
+    modelMenu.replaceChildren();
+    const groups = new Map();
+    for (const model of modelOptions) {
+      const group = groups.get(model.providerId) || {
+        id: model.providerId,
+        label: model.provider,
+        models: [],
+      };
+      group.models.push(model);
+      groups.set(model.providerId, group);
+    }
+
+    for (const group of groups.values()) {
+      const providerItem = document.createElement("div");
+      providerItem.className = "provider-item";
+      providerItem.dataset.providerId = group.id;
+
+      const providerButton = document.createElement("button");
+      providerButton.className = "provider-button";
+      providerButton.type = "button";
+      providerButton.setAttribute("role", "menuitem");
+      providerButton.setAttribute("aria-haspopup", "menu");
+      providerButton.setAttribute("aria-expanded", "false");
+
+      const dot = document.createElement("span");
+      dot.className = "provider-dot";
+      dot.setAttribute("aria-hidden", "true");
+      const copy = document.createElement("span");
+      copy.className = "provider-copy";
+      const name = document.createElement("span");
+      name.className = "provider-name";
+      name.textContent = group.label;
+      const count = document.createElement("span");
+      count.className = "provider-count";
+      count.textContent = `${group.models.length} 个模型`;
+      copy.append(name, count);
+      providerButton.append(dot, copy, chevronIcon("right", "provider-chevron"));
+
+      const submenu = document.createElement("div");
+      submenu.className = "model-submenu";
+      submenu.setAttribute("role", "menu");
+      submenu.setAttribute("aria-label", `${group.label} 模型`);
+      submenu.hidden = true;
+
+      for (const model of group.models) {
+        const option = document.createElement("button");
+        option.className = "model-option";
+        option.type = "button";
+        option.dataset.modelId = model.id;
+        option.setAttribute("role", "menuitemradio");
+        option.setAttribute("aria-checked", String(model.id === selectedModelId));
+
+        const optionName = document.createElement("span");
+        optionName.className = "model-option-name";
+        optionName.textContent = model.label;
+        const optionStatus = document.createElement("span");
+        optionStatus.className = "model-option-status";
+        optionStatus.textContent = modelStatus(model);
+        option.append(optionName, optionStatus);
+        option.addEventListener("click", () => {
+          selectModel(model.id);
+          closeModelMenu({restoreFocus: true});
+        });
+        option.addEventListener("keydown", event => {
+          handleModelOptionKeydown(event, option, providerButton);
+        });
+        submenu.appendChild(option);
+      }
+
+      providerButton.addEventListener("click", () => {
+        activateProvider(providerItem);
+      });
+      providerButton.addEventListener("keydown", event => {
+        handleProviderKeydown(event, providerItem);
+      });
+      providerItem.addEventListener("pointerenter", () => {
+        activateProvider(providerItem);
+      });
+      providerItem.append(providerButton, submenu);
+      modelMenu.appendChild(providerItem);
+    }
+  }
+
+  function chevronIcon(direction, className) {
+    const namespace = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(namespace, "svg");
+    svg.classList.add(className);
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS(namespace, "path");
+    path.setAttribute("d", direction === "right" ? "m6 4 4 4-4 4" : "m4 6 4 4 4-4");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1.5");
+    path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round");
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function modelStatus(model) {
+    if (model.providerId === "ollama") return "本地";
+    if (model.source === "cached") return "缓存";
+    if (model.source === "fallback") return "兜底";
+    return model.discovered ? "在线" : "配置";
+  }
+
+  function selectModel(modelId) {
+    const selected = modelOptions.find(model => model.id === modelId);
+    if (!selected) return;
+    selectedModelId = selected.id;
+    currentProvider.textContent = selected.provider;
+    currentModel.textContent = selected.label;
+    modelTrigger.title = `${selected.provider} / ${selected.label}`;
+    localStorage.setItem(selectedModelKey, selected.id);
+
+    for (const option of modelMenu.querySelectorAll(".model-option")) {
+      const isSelected = option.dataset.modelId === selected.id;
+      option.classList.toggle("selected", isSelected);
+      option.setAttribute("aria-checked", String(isSelected));
+    }
+  }
+
+  function activateProvider(providerItem) {
+    for (const item of modelMenu.querySelectorAll(".provider-item")) {
+      const isActive = item === providerItem;
+      item.classList.toggle("active", isActive);
+      item.querySelector(".provider-button")
+        ?.setAttribute("aria-expanded", String(isActive));
+      const submenu = item.querySelector(".model-submenu");
+      if (submenu) submenu.hidden = !isActive;
+    }
+  }
+
+  function openModelMenu({focusProvider = false} = {}) {
+    if (modelTrigger.disabled || !modelOptions.length) return;
+    modelMenu.hidden = false;
+    modelTrigger.setAttribute("aria-expanded", "true");
+    const selected = modelOptions.find(model => model.id === selectedModelId);
+    const activeItem = [...modelMenu.querySelectorAll(".provider-item")].find(
+      item => item.dataset.providerId === selected?.providerId
+    ) || modelMenu.querySelector(".provider-item");
+    if (activeItem) {
+      activateProvider(activeItem);
+      if (focusProvider) activeItem.querySelector(".provider-button")?.focus();
+    }
+  }
+
+  function closeModelMenu({restoreFocus = false} = {}) {
+    modelMenu.hidden = true;
+    modelTrigger.setAttribute("aria-expanded", "false");
+    if (restoreFocus) modelTrigger.focus();
+  }
+
+  function handleProviderKeydown(event, providerItem) {
+    const providers = [...modelMenu.querySelectorAll(".provider-button")];
+    const currentIndex = providers.indexOf(event.currentTarget);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const offset = event.key === "ArrowDown" ? 1 : -1;
+      providers[(currentIndex + offset + providers.length) % providers.length].focus();
+    } else if (event.key === "ArrowRight" || event.key === "Enter") {
+      event.preventDefault();
+      activateProvider(providerItem);
+      providerItem.querySelector(".model-option")?.focus();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeModelMenu({restoreFocus: true});
+    }
+  }
+
+  function handleModelOptionKeydown(event, option, providerButton) {
+    const options = [...option.parentElement.querySelectorAll(".model-option")];
+    const currentIndex = options.indexOf(option);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const offset = event.key === "ArrowDown" ? 1 : -1;
+      options[(currentIndex + offset + options.length) % options.length].focus();
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      providerButton.focus();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeModelMenu({restoreFocus: true});
+    }
+  }
+
+  modelTrigger.addEventListener("click", () => {
+    if (modelMenu.hidden) {
+      openModelMenu();
+    } else {
+      closeModelMenu();
+    }
+  });
+  modelTrigger.addEventListener("keydown", event => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      openModelMenu({focusProvider: true});
+    } else if (event.key === "Escape" && !modelMenu.hidden) {
+      event.preventDefault();
+      closeModelMenu();
+    }
+  });
+  document.addEventListener("pointerdown", event => {
+    if (!modelMenu.hidden && !modelPicker.contains(event.target)) {
+      closeModelMenu();
+    }
   });
 
   function showNewConversation() {
@@ -702,12 +1139,13 @@
 
     sending = true;
     sendButton.disabled = true;
-    modelSelect.disabled = true;
+    modelTrigger.disabled = true;
+    closeModelMenu();
     input.value = "";
     appendMessage(text, "user");
     const pending = appendMessage("正在思考…", "assistant");
     try {
-      const payload = {message: text, model: modelSelect.value};
+      const payload = {message: text, model: selectedModelId};
       if (currentSessionId) payload.sessionId = currentSessionId;
       const result = await api("/api/chat", {
         method: "POST",
@@ -724,7 +1162,7 @@
     } finally {
       sending = false;
       sendButton.disabled = false;
-      modelSelect.disabled = false;
+      modelTrigger.disabled = false;
       input.focus();
     }
   });

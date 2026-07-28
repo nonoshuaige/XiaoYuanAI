@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import threading
@@ -76,6 +77,25 @@ class ConversationStore:
 
                 CREATE INDEX IF NOT EXISTS idx_rounds_session_status
                 ON conversation_rounds(session_id, status, round_no);
+
+                CREATE TABLE IF NOT EXISTS model_call_audits (
+                    session_id TEXT NOT NULL,
+                    round_no INTEGER NOT NULL,
+                    model_id TEXT NOT NULL,
+                    status TEXT NOT NULL
+                        CHECK (status IN ('completed', 'failed')),
+                    provider_responses_json TEXT NOT NULL DEFAULT '[]',
+                    langchain_ai_message_json TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (session_id, round_no),
+                    FOREIGN KEY (session_id, round_no)
+                        REFERENCES conversation_rounds(session_id, round_no)
+                        ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_model_audits_session_round
+                ON model_call_audits(session_id, round_no DESC);
 
                 CREATE TABLE IF NOT EXISTS chat_messages (
                     session_id TEXT NOT NULL,
@@ -219,6 +239,8 @@ class ConversationStore:
                     """
                 )
                 connection.execute("PRAGMA user_version = 3")
+            if schema_version < 4:
+                connection.execute("PRAGMA user_version = 4")
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         session_id = self.validate_session_id(session_id)
@@ -366,6 +388,8 @@ class ConversationStore:
         session_id: str,
         round_no: int,
         assistant_content: str,
+        *,
+        model_call: dict[str, Any] | None = None,
     ) -> None:
         """Append the assistant reply and close a previously pending round."""
         session_id = self.validate_session_id(session_id)
@@ -405,6 +429,16 @@ class ConversationStore:
                 """,
                 (now, session_id, round_no),
             )
+            if model_call is not None:
+                self._write_model_call(
+                    connection,
+                    session_id=session_id,
+                    round_no=round_no,
+                    status="completed",
+                    model_call=model_call,
+                    error=None,
+                    created_at=now,
+                )
             connection.execute(
                 """
                 UPDATE sessions
@@ -419,6 +453,8 @@ class ConversationStore:
         session_id: str,
         round_no: int,
         error: str,
+        *,
+        model_call: dict[str, Any] | None = None,
     ) -> bool:
         """Keep the user message and mark the unfinished model turn as failed."""
         session_id = self.validate_session_id(session_id)
@@ -440,6 +476,16 @@ class ConversationStore:
                 (error_text, now, session_id, round_no),
             )
             if cursor.rowcount:
+                if model_call is not None:
+                    self._write_model_call(
+                        connection,
+                        session_id=session_id,
+                        round_no=round_no,
+                        status="failed",
+                        model_call=model_call,
+                        error=error_text,
+                        created_at=now,
+                    )
                 connection.execute(
                     """
                     UPDATE sessions
@@ -449,6 +495,56 @@ class ConversationStore:
                     (now, session_id),
                 )
         return cursor.rowcount > 0
+
+    def get_model_calls(
+        self,
+        session_id: str,
+        *,
+        round_no: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return complete Provider and LangChain records for model calls."""
+        session_id = self.validate_session_id(session_id)
+        query = """
+            SELECT
+                session_id,
+                round_no,
+                model_id,
+                status,
+                provider_responses_json,
+                langchain_ai_message_json,
+                error,
+                created_at
+            FROM model_call_audits
+            WHERE session_id = ?
+        """
+        parameters: list[Any] = [session_id]
+        if round_no is not None:
+            if round_no < 1:
+                raise ValueError("round_no 必须大于 0")
+            query += " AND round_no = ?"
+            parameters.append(round_no)
+        query += " ORDER BY round_no"
+        with self._connect() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        return [
+            {
+                "sessionId": row["session_id"],
+                "round": int(row["round_no"]),
+                "modelId": row["model_id"],
+                "status": row["status"],
+                "providerResponses": json.loads(
+                    row["provider_responses_json"]
+                ),
+                "langchainAIMessage": (
+                    json.loads(row["langchain_ai_message_json"])
+                    if row["langchain_ai_message_json"] is not None
+                    else None
+                ),
+                "error": row["error"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
 
     def append_round(
         self,
@@ -643,6 +739,62 @@ class ConversationStore:
                 (session_id,),
             )
         return cursor.rowcount > 0
+
+    @staticmethod
+    def _write_model_call(
+        connection: sqlite3.Connection,
+        *,
+        session_id: str,
+        round_no: int,
+        status: str,
+        model_call: dict[str, Any],
+        error: str | None,
+        created_at: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO model_call_audits(
+                session_id,
+                round_no,
+                model_id,
+                status,
+                provider_responses_json,
+                langchain_ai_message_json,
+                error,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id, round_no) DO UPDATE SET
+                model_id = excluded.model_id,
+                status = excluded.status,
+                provider_responses_json = excluded.provider_responses_json,
+                langchain_ai_message_json =
+                    excluded.langchain_ai_message_json,
+                error = excluded.error,
+                created_at = excluded.created_at
+            """,
+            (
+                session_id,
+                round_no,
+                str(model_call["model_id"]),
+                status,
+                json.dumps(
+                    model_call.get("provider_responses", []),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                (
+                    json.dumps(
+                        model_call["langchain_ai_message"],
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    if model_call.get("langchain_ai_message") is not None
+                    else None
+                ),
+                error,
+                created_at,
+            ),
+        )
 
     @staticmethod
     def _session_row(row: sqlite3.Row) -> dict[str, Any]:
