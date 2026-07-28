@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +19,7 @@ from langchain_core.messages import (
 )
 from langchain_core.tools import BaseTool
 
+from agent_skill import AgentSkill
 from config import get_default_model_id, get_llm
 from conversation_store import (
     ConversationStore,
@@ -25,8 +27,17 @@ from conversation_store import (
     conversation_store,
 )
 from model_audit import capture_model_call, serialize_ai_message
+from meeting_room_tool import (
+    MeetingRoomStore,
+    SandboxMeetingRoomClient,
+)
+from meeting_room_skill import create_meeting_room_skill
 from people_tool import PeopleStore, create_find_person_tool
-from prompts import SUMMARY_SYSTEM_PROMPT, build_system_prompt
+from prompts import (
+    SUMMARY_SYSTEM_PROMPT,
+    build_current_time_context,
+    build_system_prompt,
+)
 
 MAX_UNCOVERED_ROUNDS = 30
 COMPRESS_ROUNDS = 20
@@ -198,6 +209,8 @@ class AgentRuntime:
         model_factory: Callable[[str], Any] | None = None,
         default_model_id: str = "default",
         tools: list[BaseTool] | None = None,
+        skills: list[AgentSkill] | None = None,
+        runtime_context_hooks: list[Callable[[], BaseMessage]] | None = None,
     ):
         self.store = store
         self.default_model_id = default_model_id
@@ -205,7 +218,23 @@ class AgentRuntime:
         if model is not None:
             self._models.setdefault(default_model_id, model)
         self._model_factory = model_factory
-        self.tools = list(tools or [])
+        self.skills = list(skills or [])
+        self.tools = [
+            *list(tools or []),
+            *[
+                registered_tool
+                for skill in self.skills
+                for registered_tool in skill.tools
+            ],
+        ]
+        tool_names = [registered_tool.name for registered_tool in self.tools]
+        if len(tool_names) != len(set(tool_names)):
+            raise ValueError("Agent Tool名称不能重复")
+        self.runtime_context_hooks = tuple(
+            runtime_context_hooks
+            if runtime_context_hooks is not None
+            else [_current_time_context_message]
+        )
         if default_model_id not in self._models and model_factory is None:
             raise ValueError(f"默认模型未配置：{default_model_id}")
         self.graphs: dict[str, Any] = {}
@@ -247,7 +276,9 @@ class AgentRuntime:
                         session_id,
                         through_round=round_no - 1,
                     )
-                    model_messages: list[BaseMessage] = []
+                    model_messages: list[BaseMessage] = [
+                        hook() for hook in self.runtime_context_hooks
+                    ]
                     if summary:
                         model_messages.append(
                             _summary_context_message(summary.content)
@@ -368,7 +399,7 @@ class AgentRuntime:
             graph = create_agent(
                 model=self._get_model(model_id),
                 tools=self.tools,
-                system_prompt=build_system_prompt(self.tools),
+                system_prompt=build_system_prompt(self.tools, self.skills),
                 name=_agent_graph_name(model_id),
             )
             self.graphs[model_id] = graph
@@ -385,6 +416,11 @@ class _LazyDefaultModel:
         return self.runtime._get_model(self.runtime.default_model_id).invoke(messages)
 
 
+def _current_time_context_message() -> SystemMessage:
+    """Inject a fresh clock immediately before every model/Tool decision."""
+    return SystemMessage(content=build_current_time_context())
+
+
 _default_runtime: AgentRuntime | None = None
 _runtime_lock = threading.Lock()
 
@@ -397,10 +433,22 @@ def get_runtime() -> AgentRuntime:
             if _default_runtime is None:
                 default_model_id = get_default_model_id()
                 people_store = PeopleStore()
+                tools = [create_find_person_tool(people_store)]
+                meeting_store = MeetingRoomStore(
+                    seed_sandbox_data=(
+                        os.getenv("XIAOYUAN_SANDBOX") == "1"
+                    )
+                )
+                skills = [
+                    create_meeting_room_skill(
+                        SandboxMeetingRoomClient(meeting_store)
+                    )
+                ]
                 _default_runtime = AgentRuntime(
                     model_factory=get_llm,
                     default_model_id=default_model_id,
-                    tools=[create_find_person_tool(people_store)],
+                    tools=tools,
+                    skills=skills,
                 )
     return _default_runtime
 

@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from meeting_room_tool import MeetingRoomStore
 from people_tool import PeopleStore
 from sandbox import SANDBOX_PEOPLE, seed_sandbox_people
 
@@ -49,7 +50,16 @@ class SandboxTests(unittest.TestCase):
 
             self.assertTrue(db_path.exists())
             self.assertIn("已写入并验证 10 条", completed.stdout)
+            self.assertIn("已验证 8 间虚构会议室", completed.stdout)
             store = PeopleStore(db_path)
+            meeting_store = MeetingRoomStore(db_path)
+            self.assertEqual(
+                sum(
+                    len(meeting_store.list_rooms(floor=floor)["rooms"])
+                    for floor in ("5", "7", "12")
+                ),
+                8,
+            )
             for person in SANDBOX_PEOPLE:
                 self.assertEqual(
                     store.find(employee_id=person["employee_id"])["status"],

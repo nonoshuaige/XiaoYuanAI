@@ -2,7 +2,24 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from langchain_core.tools import BaseTool
+
+from agent_skill import AgentSkill
+
+
+SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
+WEEKDAY_NAMES = (
+    "星期一",
+    "星期二",
+    "星期三",
+    "星期四",
+    "星期五",
+    "星期六",
+    "星期日",
+)
 
 
 BASE_SYSTEM_PROMPT = """# 身份
@@ -79,14 +96,45 @@ SUMMARY_SYSTEM_PROMPT = """你是对话上下文压缩器。请把已有摘要�
 """
 
 
-def build_system_prompt(tools: list[BaseTool]) -> str:
-    """Build capability instructions from the tools actually registered."""
+def build_current_time_context(
+    current_time: datetime | None = None,
+) -> str:
+    """Build trusted, request-scoped clock context for relative date parsing."""
+    resolved = current_time or datetime.now(SHANGHAI_TIMEZONE)
+    if resolved.tzinfo is None:
+        resolved = resolved.replace(tzinfo=SHANGHAI_TIMEZONE)
+    else:
+        resolved = resolved.astimezone(SHANGHAI_TIMEZONE)
+    weekday = WEEKDAY_NAMES[resolved.weekday()]
+    return (
+        "# 服务端当前时间\n\n"
+        "以下时间由服务端在本轮模型调用前动态注入，只用于解析用户明确表达的"
+        "相对日期和时间，不代表用户授权补齐其他预约参数。\n"
+        f"- 时区：Asia/Shanghai（UTC+08:00）\n"
+        f"- 当前日期：{resolved:%Y/%m/%d}\n"
+        f"- 当前时间：{resolved:%H:%M:%S}\n"
+        f"- 当前星期：{weekday}\n"
+    )
+
+
+def build_system_prompt(
+    tools: list[BaseTool],
+    skills: list[AgentSkill] | tuple[AgentSkill, ...] = (),
+) -> str:
+    """Build instructions from the tools and workflow skills actually registered."""
     tool_sections: list[str] = []
     seen_names: set[str] = set()
+    skill_tool_names = frozenset(
+        tool_name
+        for skill in skills
+        for tool_name in skill.tool_names
+    )
     for registered_tool in tools:
         if registered_tool.name in seen_names:
             continue
         seen_names.add(registered_tool.name)
+        if registered_tool.name in skill_tool_names:
+            continue
         tool_sections.append(
             TOOL_PROMPTS.get(
                 registered_tool.name,
@@ -97,11 +145,22 @@ def build_system_prompt(tools: list[BaseTool]) -> str:
             )
         )
 
-    available_tools = (
-        "\n".join(tool_sections) if tool_sections else NO_TOOLS_PROMPT
+    skill_sections = [
+        (
+            f"### 技能：{skill.description}（`{skill.name}`）\n\n"
+            f"包含工具：{', '.join(f'`{name}`' for name in skill.tool_names)}\n\n"
+            f"{skill.instructions.strip()}"
+        )
+        for skill in skills
+    ]
+    capability_sections = [*tool_sections, *skill_sections]
+    available_capabilities = (
+        "\n".join(capability_sections)
+        if capability_sections
+        else NO_TOOLS_PROMPT
     )
     return (
         f"{BASE_SYSTEM_PROMPT.rstrip()}\n\n"
-        "# 当前已接入工具\n\n"
-        f"{available_tools.strip()}\n"
+        "# 当前已接入技能与工具\n\n"
+        f"{available_capabilities.strip()}\n"
     )

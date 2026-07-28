@@ -48,7 +48,7 @@
       min-width: 0;
       min-height: 0;
       display: grid;
-      grid-template-rows: auto auto 1fr;
+      grid-template-rows: auto auto auto 1fr;
       background: var(--sidebar);
       border-right: 1px solid var(--line);
     }
@@ -95,6 +95,7 @@
       font-weight: 650;
     }
     .sandbox-nav[hidden] { display: none; }
+    .sandbox-nav + .sandbox-nav { margin-top: 6px; }
     .sandbox-nav:hover { background: var(--accent-soft); }
     .sandbox-nav:focus-visible {
       outline: 2px solid var(--accent);
@@ -690,7 +691,7 @@
     @media (max-width: 720px) {
       .app {
         grid-template-columns: 1fr;
-        grid-template-rows: 190px minmax(0, 1fr);
+        grid-template-rows: 250px minmax(0, 1fr);
       }
       .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
       .session-list {
@@ -764,6 +765,20 @@
           stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
       </svg>
       员工沙箱
+    </a>
+    <a
+      class="sandbox-nav"
+      id="meetingRoomSandboxNav"
+      href="/meeting-room-sandbox"
+      hidden
+    >
+      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <rect x="3" y="4.5" width="14" height="12" rx="2.5"
+          stroke="currentColor" stroke-width="1.5"/>
+        <path d="M6.5 2.8v3.4M13.5 2.8v3.4M3.5 8h13M7 11h2M11 11h2M7 14h2"
+          stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      会议室沙箱
     </a>
     <div class="session-list" id="sessionList"></div>
   </aside>
@@ -848,6 +863,7 @@
   const selectedModelKey = "xiaoyuan-selected-model";
   const sessionList = document.querySelector("#sessionList");
   const sandboxNav = document.querySelector("#sandboxNav");
+  const meetingRoomSandboxNav = document.querySelector("#meetingRoomSandboxNav");
   const messages = document.querySelector("#messages");
   const chatTitle = document.querySelector("#chatTitle");
   const form = document.querySelector("#composer");
@@ -876,9 +892,12 @@
   async function revealSandboxNavigation() {
     try {
       const response = await fetch("/api/sandbox/status");
-      sandboxNav.hidden = !response.ok;
+      const hidden = !response.ok;
+      sandboxNav.hidden = hidden;
+      meetingRoomSandboxNav.hidden = hidden;
     } catch (_error) {
       sandboxNav.hidden = true;
+      meetingRoomSandboxNav.hidden = true;
     }
   }
 

@@ -1,19 +1,21 @@
-# 小原 AI 助手 1.3
+# 小原 AI 助手 1.5
 
 小原 AI 助手是一个面向中文办公场景的单 Agent 对话应用。项目以稳定的多轮对话
 为核心，提供多会话管理、SQLite 全量持久化、滚动摘要、多模型发现与切换，以及
 按需加载的模型运行时。模型调用同时保留 Provider 原始响应与 LangChain 转换后的
 `AIMessage`，用于本地开发和问题调试。
 
-当前版本已加载首个业务 Tool“找人”，可按自然语言中的工号、手机号或姓名查询内部
-员工通讯录。
+当前版本始终加载“找人”“查询会议室”和“预约会议室”Tool；通过沙箱启动时额外
+提供可直接验证数据库写入结果的员工与会议室操作页面。
 
 ## 项目能力
 
 | 模块 | 当前能力 |
 |---|---|
-| Agent 运行时 | LangChain `create_agent`，结构化 System Prompt，支持“找人”工具 |
+| Agent 运行时 | LangChain `create_agent`，按实际注册 Tool 动态生成能力提示 |
 | 找人工具 | 工号 > 手机号 > 姓名优先级查询，部门辅助过滤，重名候选消歧 |
+| 会议室工具 | 沙箱内按楼层/日期/时段/人数查询，确认后重查冲突并预约 |
+| 会议室验证台 | 原生 JavaScript 渲染会议室状态、日程、确认交互和服务端预约凭证 |
 | 上下文管理 | 固定系统规则 + 用户层历史摘要 + 未覆盖原文 + 当前问题 |
 | 长对话压缩 | 30/20/10 滚动摘要，后台异步生成，保留全量原文 |
 | 会话管理 | 新建、切换、自动命名、重命名、删除、多会话隔离 |
@@ -23,7 +25,7 @@
 | 本地模型 | 自动发现本机 Ollama 模型，通过 OpenAI 兼容接口调用 |
 | 模型调用调试 | 对照保存 Provider 完整 HTTP 响应和 LangChain `AIMessage` |
 | 数据存储 | SQLite + WAL，聊天记录、轮次、模型调试记录、摘要版本永久保存 |
-| Web 服务 | FastAPI JSON API + 原生 HTML/CSS/JavaScript 聊天页面 |
+| Web 服务 | FastAPI JSON API + 原生 HTML/CSS/JavaScript 交互页面 |
 
 ## 仓库定位
 
@@ -92,17 +94,17 @@ AgentRuntime
   ├── 按 session 串行执行对话轮次
   ├── 从 SQLite 重建模型上下文
   ├── 记录 Provider 响应与 LangChain 转换结果，供调试对照
-  ├── 按需调用“找人”工具
+  ├── 按需调用当前环境实际注册的工具
   └── 提交异步摘要任务
         │
         ├── OpenAI 兼容模型服务
-        └── SQLite 会话与员工通讯录存储
+        └── SQLite 会话、通讯录与沙箱会议室存储
 ```
 
 ## Agent 运行时
 
-主链位于 `agent.py`，System Prompt 及其动态构建逻辑位于 `prompts.py`，生产 Agent
-注册了“找人”工具：
+主链位于 `agent.py`，System Prompt 及其动态构建逻辑位于 `prompts.py`。普通环境
+与沙箱环境注册相同的“找人、查询会议室、预约会议室”工具列表：
 
 ```text
 收到用户问题
@@ -144,10 +146,11 @@ AgentRuntime
 生产 Agent 首次初始化时会自动建表，但不会写入虚构员工。同步员工数据时可调用
 `PeopleStore.upsert(...)`；之后 Agent 即可查询同一数据库中的记录。
 
-### 虚构员工沙箱
+### 虚构业务沙箱
 
 仓库提供独立的 `data/sandbox.db` 沙箱，不会污染默认的
-`data/xiaoyuan.db`。运行以下命令会幂等写入 10 条虚构员工记录并启动网页服务：
+`data/xiaoyuan.db`。运行以下命令会初始化虚构员工、8 间会议室和当日日程，并启动
+网页服务：
 
 ```bash
 /Users/zypro/Desktop/pythonenv/envs/XiaoYuan/bin/python sandbox.py
@@ -170,10 +173,15 @@ AgentRuntime
 沙箱仍会使用 `.env` 中配置的模型服务；仅 SQLite 数据与默认环境隔离。可通过
 `XIAOYUAN_DB_PATH` 为普通启动指定其他数据库。
 
-启动后可从聊天页侧栏进入“员工沙箱”，或直接访问
-<http://127.0.0.1:8000/employee-sandbox>。页面支持查看、搜索、新增、编辑和删除，
+启动后聊天页侧栏会同时显示“员工沙箱”和“会议室沙箱”两个入口。员工页面可直接访问
+<http://127.0.0.1:8000/employee-sandbox>，支持查看、搜索、新增、编辑和删除，
 每次操作都会立即写入当前沙箱 SQLite 数据库。沙箱仅在数据库文件首次创建时写入
 初始虚构数据，因此页面修改和删除（包括删除全部员工）在服务重启后仍会保留。
+
+会议室页面可直接访问 <http://127.0.0.1:8000/meeting-room-sandbox>，支持按楼层、
+日期、时间和人数查看会议室状态。预约必须在确认窗口中明确勾选确认；成功后页面展示
+服务端生成的 `bookingId` 和 `meetingId`，并从数据库重新读取日程，因此结果不依赖
+AI 或前端自行宣称。
 
 员工沙箱 API：
 
@@ -184,8 +192,18 @@ AgentRuntime
 | `POST` | `/api/sandbox/people` | 新增员工 |
 | `PUT` | `/api/sandbox/people/{employeeId}` | 更新员工全部字段 |
 | `DELETE` | `/api/sandbox/people/{employeeId}` | 删除员工 |
+| `GET` | `/api/sandbox/meeting-rooms` | 查询会议室与指定日期日程 |
+| `POST` | `/api/sandbox/meeting-room-bookings` | 校验冲突并创建预约 |
 
 上述页面与 API 只在通过 `sandbox.py` 启动时开放；普通生产启动返回 404。
+
+Agent 始终注册：
+
+- `find_person` Tool：按工号、手机号或姓名查询员工。
+- `meeting-room-booking` Skill：集中管理会议室参数收集、相对日期解析、查询、
+  候选选择、明确确认和预约结果校验。
+  - `queryMeetingRooms` Tool：只有楼层时返回整层会议室；日期和时间同时提供时筛选。
+  - `bookMeetingRoom` Tool：必须明确确认，创建前重新查询；冲突时不会创建预约。
 
 ## 上下文管理
 
@@ -196,7 +214,10 @@ SQLite 是持久化事实来源。每次聊天请求都会重新构建临时消�
 
 ```text
 SystemMessage
-  助手身份 + 通用能力 + 按实际注册生成的工具能力与调用规则
+  助手身份 + 通用能力 + 按实际注册生成的 Skill/Tool 能力与调用规则
+
+SystemMessage
+  本轮服务端动态注入的 Asia/Shanghai 当前日期、时间与星期
 
 HumanMessage（可选）
   历史对话摘要，明确标记为“用户层上下文”
@@ -207,6 +228,10 @@ HumanMessage / AIMessage
 HumanMessage
   当前用户问题
 ```
+
+当前时间上下文在每轮模型调用前重新生成，不写入聊天历史。它用于把用户明确说出的
+“今天”“明天”“后天”等相对日期换算为会议室接口需要的 `yyyy/MM/dd`；不会用来
+猜测用户没有提供的楼层、预约时段或确认状态。
 
 ### 权限边界
 
@@ -439,15 +464,21 @@ ollama pull qwen3.5:9b
 ├── config.py                # Provider 配置、模型发现、目录状态和模型创建
 ├── conversation_store.py    # SQLite schema、会话、轮次、消息和摘要持久化
 ├── model_audit.py           # Provider HTTP 捕获与 AIMessage 完整序列化
+├── meeting_room_tool.py     # 会议室 SQLite、客户端适配器和两个 Agent Tool
 ├── server.py                # FastAPI 页面与 JSON API
-├── sandbox.py               # 虚构员工数据与隔离沙箱启动入口
+├── sandbox.py               # 虚构员工、会议室数据与隔离沙箱启动入口
 ├── static/
 │   ├── index.html           # 原生 Web 聊天界面
-│   └── employee-sandbox.html # 员工沙箱 CRUD 页面
+│   ├── employee-sandbox.html # 员工沙箱 CRUD 页面
+│   ├── meeting-room-sandbox.html # 会议室状态与预约页面
+│   ├── meeting-room-sandbox.css  # 会议室页面视觉样式
+│   └── meeting-room-sandbox.js   # 会议室页面原生 JavaScript 交互逻辑
 ├── tests/
 │   ├── test_agent.py        # 会话、上下文、失败恢复、摘要和懒加载测试
 │   ├── test_people_tool.py  # 找人优先级、消歧、校验和 Tool 输出测试
 │   ├── test_employee_sandbox_api.py # 员工沙箱页面与 CRUD API 测试
+│   ├── test_meeting_room_tool.py # 会议室查询、确认、重查与冲突测试
+│   ├── test_meeting_room_sandbox_api.py # 会议室页面和预约 API 测试
 │   ├── test_sandbox.py      # 虚构数据幂等写入与沙箱数据库隔离测试
 │   ├── test_config.py       # Provider、模型目录和模型选择测试
 │   └── test_model_audit.py  # Provider 原始响应与 AIMessage 序列化测试
@@ -481,7 +512,7 @@ python -m unittest discover -s tests -v
 
 当前版本仍有以下明确边界：
 
-- 当前只有“找人”一个业务 Tool，尚无通用 Skill Registry 或执行审批；
+- 会议室 Tool 当前使用本地存储适配器，尚未接企业真实接口和认证；
 - 30/20/10 是轮次策略，尚未实现 Token 软阈值和硬上限；
 - 摘要尚未记录 prompt 版本、模型、source hash 和 token 用量；
 - session 串行锁只在单个 Python 进程内有效；
@@ -492,4 +523,4 @@ python -m unittest discover -s tests -v
 
 ## 版本
 
-当前版本：**1.4 找人工具与隔离沙箱**
+当前版本：**1.5 会议室查询、预约 Tool 与可验证沙箱**

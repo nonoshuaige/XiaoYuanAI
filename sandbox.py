@@ -122,9 +122,11 @@ def main() -> None:
     os.environ["XIAOYUAN_SANDBOX"] = "1"
     os.chdir(PROJECT_DIR)
 
+    from meeting_room_tool import MeetingRoomStore
     from people_tool import PeopleStore
 
     people_store = PeopleStore()
+    meeting_room_store = MeetingRoomStore()
     existing_people = people_store.list_all()
     if database_existed:
         print(f"已保留沙箱中的 {len(existing_people)} 条员工数据")
@@ -139,6 +141,11 @@ def main() -> None:
         if any(status != "found" for status in checks.values()):
             raise RuntimeError(f"沙箱员工数据校验失败：{checks}")
         print(f"已写入并验证 {seeded_count} 条虚构员工数据")
+    meeting_room_count = sum(
+        len(meeting_room_store.list_rooms(floor=floor)["rooms"])
+        for floor in ("5", "7", "12")
+    )
+    print(f"已验证 {meeting_room_count} 间虚构会议室及当日日程")
     print(f"沙箱数据库：{db_path}")
     if args.seed_only:
         return

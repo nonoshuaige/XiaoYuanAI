@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import threading
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from langchain_core.language_models.fake_chat_models import (
@@ -15,7 +16,13 @@ from pydantic import PrivateAttr
 from agent import AgentRuntime
 from conversation_store import ConversationStore
 from people_tool import PeopleStore, create_find_person_tool
-from prompts import build_system_prompt
+from prompts import build_current_time_context, build_system_prompt
+from meeting_room_tool import (
+    MeetingRoomStore,
+    SandboxMeetingRoomClient,
+    create_meeting_room_tools,
+)
+from meeting_room_skill import create_meeting_room_skill
 
 
 class RecordingFakeChatModel(FakeListChatModel):
@@ -122,7 +129,94 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertNotIn("当前没有接入任何外部工具", prompt)
         self.assertLess(
             prompt.index("## 通用能力（模型直接完成，不调用工具）"),
-            prompt.index("# 当前已接入工具"),
+            prompt.index("# 当前已接入技能与工具"),
+        )
+
+    def test_system_prompt_lists_meeting_tools_only_when_registered(self):
+        meeting_store = MeetingRoomStore(
+            Path(self.temp_dir.name) / "meeting-rooms.db"
+        )
+        prompt_without_tools = build_system_prompt([])
+        skill = create_meeting_room_skill(
+            SandboxMeetingRoomClient(meeting_store)
+        )
+        prompt_with_tools = build_system_prompt(
+            list(skill.tools),
+            [skill],
+        )
+
+        self.assertNotIn("queryMeetingRooms", prompt_without_tools)
+        self.assertNotIn("bookMeetingRoom", prompt_without_tools)
+        self.assertIn("meeting-room-booking", prompt_with_tools)
+        self.assertIn("`queryMeetingRooms`, `bookMeetingRoom`", prompt_with_tools)
+        self.assertIn("用户选择会议室只代表选中候选", prompt_with_tools)
+        self.assertIn("本轮服务端时间上下文", prompt_with_tools)
+
+    def test_runtime_registers_skill_tools_and_constraints_together(self):
+        meeting_store = MeetingRoomStore(
+            Path(self.temp_dir.name) / "meeting-skill.db"
+        )
+        skill = create_meeting_room_skill(
+            SandboxMeetingRoomClient(meeting_store)
+        )
+        runtime = AgentRuntime(
+            FakeListChatModel(responses=["好的"]),
+            store=self.store,
+            skills=[skill],
+        )
+        self.runtimes.append(runtime)
+
+        self.assertEqual(
+            [registered_tool.name for registered_tool in runtime.tools],
+            ["queryMeetingRooms", "bookMeetingRoom"],
+        )
+        graph_prompt = build_system_prompt(runtime.tools, runtime.skills)
+        self.assertIn("必须基于新参数重新获取确认", graph_prompt)
+        self.assertIn("不得由模型生成成功凭证", graph_prompt)
+
+    def test_runtime_injects_fresh_server_time_before_each_turn(self):
+        model = RecordingFakeChatModel(responses=["第一轮", "第二轮"])
+        moments = iter(
+            [
+                datetime.fromisoformat("2026-07-28T23:59:58+08:00"),
+                datetime.fromisoformat("2026-07-29T00:00:02+08:00"),
+            ]
+        )
+        runtime = AgentRuntime(
+            model,
+            store=self.store,
+            runtime_context_hooks=[
+                lambda: SystemMessage(
+                    content=build_current_time_context(next(moments))
+                )
+            ],
+        )
+        self.runtimes.append(runtime)
+
+        runtime.chat("clock-hook", "今天七楼有会议室吗")
+        runtime.chat("clock-hook", "那明天呢")
+
+        first_system = [
+            message.content
+            for message in model.recorded_calls[0]
+            if isinstance(message, SystemMessage)
+        ]
+        second_system = [
+            message.content
+            for message in model.recorded_calls[1]
+            if isinstance(message, SystemMessage)
+        ]
+        self.assertTrue(
+            any("当前日期：2026/07/28" in content for content in first_system)
+        )
+        self.assertTrue(
+            any("当前时间：23:59:58" in content for content in first_system)
+        )
+        self.assertTrue(
+            any("当前日期：2026/07/29" in content for content in second_system)
+        )
+        self.assertTrue(
+            any("当前时间：00:00:02" in content for content in second_system)
         )
 
     def test_full_transcript_persists_after_store_recreation(self):

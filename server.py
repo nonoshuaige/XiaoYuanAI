@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.concurrency import run_in_threadpool
@@ -15,6 +16,12 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from agent import get_context, get_runtime, reset_session
 from config import get_model_options
 from conversation_store import conversation_store
+from meeting_room_tool import (
+    MeetingRoomConflictError,
+    MeetingRoomError,
+    MeetingRoomNotFoundError,
+    MeetingRoomStore,
+)
 from people_tool import (
     DuplicatePersonError,
     PeopleStore,
@@ -25,6 +32,7 @@ from people_tool import (
 app = FastAPI(title="小原 AI 助手")
 SANDBOX_MODE = os.getenv("XIAOYUAN_SANDBOX") == "1"
 people_store = PeopleStore()
+meeting_room_store = MeetingRoomStore() if SANDBOX_MODE else None
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -63,6 +71,24 @@ class EmployeeRequest(BaseModel):
     department: str = Field(min_length=1, max_length=80)
 
 
+class MeetingRoomBookingRequest(BaseModel):
+    model_config = ConfigDict(
+        str_strip_whitespace=True,
+        populate_by_name=True,
+    )
+
+    room_id: str = Field(alias="roomId", min_length=1, max_length=80)
+    floor: str = Field(min_length=1, max_length=8, pattern=r"^\d+$")
+    date: str = Field(pattern=r"^\d{4}/\d{2}/\d{2}$")
+    time_range: str = Field(
+        alias="timeRange",
+        pattern=r"^\d{2}:\d{2}-\d{2}:\d{2}$",
+    )
+    confirmed: Literal[True]
+    capacity: int = Field(default=5, ge=1, le=500)
+    theme: str | None = Field(default=None, max_length=100)
+
+
 def _require_sandbox() -> None:
     if not SANDBOX_MODE:
         raise HTTPException(status_code=404, detail="sandbox not enabled")
@@ -79,10 +105,31 @@ async def employee_sandbox_page():
     return FileResponse("static/employee-sandbox.html")
 
 
+@app.get("/meeting-room-sandbox")
+async def meeting_room_sandbox_page():
+    _require_sandbox()
+    return FileResponse("static/meeting-room-sandbox.html")
+
+
 @app.get("/api/sandbox/status")
 async def sandbox_status():
     _require_sandbox()
-    return {"sandbox": True, "database": str(people_store.db_path)}
+    return {
+        "sandbox": True,
+        "database": str(people_store.db_path),
+        "destinations": [
+            {
+                "id": "employees",
+                "label": "员工沙箱",
+                "href": "/employee-sandbox",
+            },
+            {
+                "id": "meeting-rooms",
+                "label": "会议室沙箱",
+                "href": "/meeting-room-sandbox",
+            },
+        ],
+    }
 
 
 @app.get("/api/sandbox/people")
@@ -135,6 +182,58 @@ async def delete_sandbox_person(employee_id: str):
     except PersonNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return Response(status_code=204)
+
+
+@app.get("/api/sandbox/meeting-rooms")
+async def list_sandbox_meeting_rooms(
+    floor: str = Query(pattern=r"^\d+$"),
+    date: str | None = Query(
+        default=None,
+        pattern=r"^\d{4}/\d{2}/\d{2}$",
+    ),
+    time_range: str | None = Query(
+        default=None,
+        alias="timeRange",
+        pattern=r"^\d{2}:\d{2}-\d{2}:\d{2}$",
+    ),
+    capacity: int | None = Query(default=None, ge=1, le=500),
+):
+    _require_sandbox()
+    assert meeting_room_store is not None
+    try:
+        return await run_in_threadpool(
+            meeting_room_store.list_rooms,
+            floor=floor,
+            date=date,
+            time_range=time_range,
+            capacity=capacity,
+        )
+    except MeetingRoomError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/sandbox/meeting-room-bookings", status_code=201)
+async def create_sandbox_meeting_room_booking(
+    request: MeetingRoomBookingRequest,
+):
+    _require_sandbox()
+    assert meeting_room_store is not None
+    try:
+        return await run_in_threadpool(
+            meeting_room_store.create_booking,
+            room_id=request.room_id,
+            floor=request.floor,
+            date=request.date,
+            time_range=request.time_range,
+            capacity=request.capacity,
+            theme=request.theme,
+        )
+    except MeetingRoomConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except MeetingRoomNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except MeetingRoomError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/sessions")
