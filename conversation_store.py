@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -12,8 +13,18 @@ from pathlib import Path
 from typing import Any
 
 
-DATA_DIR = Path(__file__).parent / "data"
-DEFAULT_DB_PATH = DATA_DIR / "xiaoyuan.db"
+PROJECT_DIR = Path(__file__).resolve().parent
+DATA_DIR = PROJECT_DIR / "data"
+_configured_db_path = os.getenv("XIAOYUAN_DB_PATH")
+DEFAULT_DB_PATH = (
+    (
+        Path(_configured_db_path).expanduser()
+        if Path(_configured_db_path).expanduser().is_absolute()
+        else PROJECT_DIR / _configured_db_path
+    )
+    if _configured_db_path
+    else DATA_DIR / "xiaoyuan.db"
+)
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 

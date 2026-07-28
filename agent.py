@@ -16,6 +16,7 @@ from langchain_core.messages import (
     HumanMessage,
     SystemMessage,
 )
+from langchain_core.tools import BaseTool
 
 from config import get_default_model_id, get_llm
 from conversation_store import (
@@ -24,6 +25,7 @@ from conversation_store import (
     conversation_store,
 )
 from model_audit import capture_model_call, serialize_ai_message
+from people_tool import PeopleStore, create_find_person_tool
 
 
 SYSTEM_PROMPT = """你是小原 AI 助手，一个面向中文办公场景的智能助手。
@@ -36,6 +38,12 @@ SYSTEM_PROMPT = """你是小原 AI 助手，一个面向中文办公场景的智
 - 优先理解用户真正想完成的事情，给出清晰、实用、可直接使用的结果。
 - 信息不足且会明显影响结果时，提出必要的澄清问题。
 - 不编造事实；区分已知信息、合理推断和不确定内容。
+
+使用“找人”工具时：
+- 只有用户明确提供工号、手机号、姓名中的至少一项时才调用，不猜测缺失字段。
+- 用户同时提供多项时全部如实传入；工具会按工号 > 手机号 > 姓名的优先级查询。
+- 部门可作为辅助过滤条件，但不能代替工号、手机号或姓名。
+- 工具返回多位候选时，不擅自选人，应向用户展示必要的候选信息并请其确认。
 """
 
 SUMMARY_SYSTEM_PROMPT = """你是对话上下文压缩器。请把已有摘要和本次提供的历史对话合并成
@@ -220,6 +228,7 @@ class AgentRuntime:
         models: dict[str, Any] | None = None,
         model_factory: Callable[[str], Any] | None = None,
         default_model_id: str = "default",
+        tools: list[BaseTool] | None = None,
     ):
         self.store = store
         self.default_model_id = default_model_id
@@ -227,6 +236,7 @@ class AgentRuntime:
         if model is not None:
             self._models.setdefault(default_model_id, model)
         self._model_factory = model_factory
+        self.tools = list(tools or [])
         if default_model_id not in self._models and model_factory is None:
             raise ValueError(f"默认模型未配置：{default_model_id}")
         self.graphs: dict[str, Any] = {}
@@ -388,7 +398,7 @@ class AgentRuntime:
                 return graph
             graph = create_agent(
                 model=self._get_model(model_id),
-                tools=[],
+                tools=self.tools,
                 system_prompt=SYSTEM_PROMPT,
                 name=_agent_graph_name(model_id),
             )
@@ -417,9 +427,11 @@ def get_runtime() -> AgentRuntime:
         with _runtime_lock:
             if _default_runtime is None:
                 default_model_id = get_default_model_id()
+                people_store = PeopleStore()
                 _default_runtime = AgentRuntime(
                     model_factory=get_llm,
                     default_model_id=default_model_id,
+                    tools=[create_find_person_tool(people_store)],
                 )
     return _default_runtime
 

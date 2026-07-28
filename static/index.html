@@ -37,7 +37,7 @@
     .sidebar {
       min-width: 0;
       display: grid;
-      grid-template-rows: auto 1fr;
+      grid-template-rows: auto auto 1fr;
       background: var(--sidebar);
       border-right: 1px solid var(--line);
     }
@@ -48,6 +48,28 @@
       border-bottom: 1px solid var(--line);
     }
     .sidebar-header h2 { margin: 0; font-size: 15px; }
+    .sandbox-nav {
+      min-height: 40px;
+      margin: 10px 10px 0;
+      padding: 0 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid #bfd1fb;
+      border-radius: 10px;
+      color: #2459cb;
+      background: white;
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .sandbox-nav[hidden] { display: none; }
+    .sandbox-nav:hover { background: var(--blue-soft); }
+    .sandbox-nav:focus-visible {
+      outline: 2px solid var(--blue);
+      outline-offset: 2px;
+    }
+    .sandbox-nav svg { width: 16px; height: 16px; }
     .session-list {
       min-height: 0;
       overflow-y: auto;
@@ -539,6 +561,13 @@
     <div class="sidebar-header">
       <h2>对话记录</h2>
     </div>
+    <a class="sandbox-nav" id="sandboxNav" href="/employee-sandbox" hidden>
+      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <path d="M5 16v-1.4A3.6 3.6 0 0 1 8.6 11h2.8a3.6 3.6 0 0 1 3.6 3.6V16M10 8.2A2.6 2.6 0 1 0 10 3a2.6 2.6 0 0 0 0 5.2Z"
+          stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      员工沙箱
+    </a>
     <div class="session-list" id="sessionList"></div>
   </aside>
 
@@ -621,6 +650,7 @@
   const currentSessionKey = "xiaoyuan-current-session";
   const selectedModelKey = "xiaoyuan-selected-model";
   const sessionList = document.querySelector("#sessionList");
+  const sandboxNav = document.querySelector("#sandboxNav");
   const messages = document.querySelector("#messages");
   const chatTitle = document.querySelector("#chatTitle");
   const form = document.querySelector("#composer");
@@ -645,6 +675,15 @@
   let pendingDeleteSession = null;
   let modalReturnFocus = null;
   let modalDeleting = false;
+
+  async function revealSandboxNavigation() {
+    try {
+      const response = await fetch("/api/sandbox/status");
+      sandboxNav.hidden = !response.ok;
+    } catch (_error) {
+      sandboxNav.hidden = true;
+    }
+  }
 
   async function api(url, options = {}) {
     const response = await fetch(url, options);
@@ -1169,6 +1208,7 @@
 
   (async () => {
     try {
+      revealSandboxNavigation();
       await Promise.all([loadModels(), refreshSessions()]);
       const savedSessionExists = sessions.some(
         session => session.sessionId === currentSessionId
