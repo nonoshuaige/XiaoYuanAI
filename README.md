@@ -169,6 +169,23 @@ AgentRuntime
 沙箱仍会使用 `.env` 中配置的模型服务；仅 SQLite 数据与默认环境隔离。可通过
 `XIAOYUAN_DB_PATH` 为普通启动指定其他数据库。
 
+启动后可从聊天页侧栏进入“员工沙箱”，或直接访问
+<http://127.0.0.1:8000/employee-sandbox>。页面支持查看、搜索、新增、编辑和删除，
+每次操作都会立即写入当前沙箱 SQLite 数据库。沙箱仅在数据库文件首次创建时写入
+初始虚构数据，因此页面修改和删除（包括删除全部员工）在服务重启后仍会保留。
+
+员工沙箱 API：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/api/sandbox/status` | 检查当前服务是否为沙箱模式 |
+| `GET` | `/api/sandbox/people` | 获取员工列表，支持 `search` 查询 |
+| `POST` | `/api/sandbox/people` | 新增员工 |
+| `PUT` | `/api/sandbox/people/{employeeId}` | 更新员工全部字段 |
+| `DELETE` | `/api/sandbox/people/{employeeId}` | 删除员工 |
+
+上述页面与 API 只在通过 `sandbox.py` 启动时开放；普通生产启动返回 404。
+
 ## 上下文管理
 
 SQLite 是持久化事实来源。每次聊天请求都会重新构建临时消息 State，不依赖进程
@@ -423,10 +440,12 @@ ollama pull qwen3.5:9b
 ├── server.py                # FastAPI 页面与 JSON API
 ├── sandbox.py               # 虚构员工数据与隔离沙箱启动入口
 ├── static/
-│   └── index.html           # 原生 Web 聊天界面
+│   ├── index.html           # 原生 Web 聊天界面
+│   └── employee-sandbox.html # 员工沙箱 CRUD 页面
 ├── tests/
 │   ├── test_agent.py        # 会话、上下文、失败恢复、摘要和懒加载测试
 │   ├── test_people_tool.py  # 找人优先级、消歧、校验和 Tool 输出测试
+│   ├── test_employee_sandbox_api.py # 员工沙箱页面与 CRUD API 测试
 │   ├── test_sandbox.py      # 虚构数据幂等写入与沙箱数据库隔离测试
 │   ├── test_config.py       # Provider、模型目录和模型选择测试
 │   └── test_model_audit.py  # Provider 原始响应与 AIMessage 序列化测试

@@ -115,25 +115,30 @@ def main() -> None:
     if not db_path.is_absolute():
         db_path = PROJECT_DIR / db_path
     db_path = db_path.resolve()
+    database_existed = db_path.exists()
 
     # Shared stores resolve their default path at import time.
     os.environ["XIAOYUAN_DB_PATH"] = str(db_path)
+    os.environ["XIAOYUAN_SANDBOX"] = "1"
     os.chdir(PROJECT_DIR)
 
     from people_tool import PeopleStore
 
     people_store = PeopleStore()
-    seeded_count = seed_sandbox_people(people_store)
-    checks = {
-        person["employee_id"]: people_store.find(
-            employee_id=person["employee_id"]
-        )["status"]
-        for person in SANDBOX_PEOPLE
-    }
-    if any(status != "found" for status in checks.values()):
-        raise RuntimeError(f"沙箱员工数据校验失败：{checks}")
-
-    print(f"已写入并验证 {seeded_count} 条虚构员工数据")
+    existing_people = people_store.list_all()
+    if database_existed:
+        print(f"已保留沙箱中的 {len(existing_people)} 条员工数据")
+    else:
+        seeded_count = seed_sandbox_people(people_store)
+        checks = {
+            person["employee_id"]: people_store.find(
+                employee_id=person["employee_id"]
+            )["status"]
+            for person in SANDBOX_PEOPLE
+        }
+        if any(status != "found" for status in checks.values()):
+            raise RuntimeError(f"沙箱员工数据校验失败：{checks}")
+        print(f"已写入并验证 {seeded_count} 条虚构员工数据")
     print(f"沙箱数据库：{db_path}")
     if args.seed_only:
         return

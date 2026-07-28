@@ -14,7 +14,13 @@ from pydantic import ValidationError
 
 from agent import AgentRuntime
 from conversation_store import ConversationStore
-from people_tool import FindPersonInput, PeopleStore, create_find_person_tool
+from people_tool import (
+    DuplicatePersonError,
+    FindPersonInput,
+    PeopleStore,
+    PersonNotFoundError,
+    create_find_person_tool,
+)
 
 
 class ToolCallingFakeModel(FakeMessagesListChatModel):
@@ -100,6 +106,39 @@ class PeopleStoreTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "found")
         self.assertEqual(result["people"][0]["employee_id"], "E002")
+
+    def test_directory_crud_persists_and_enforces_uniqueness(self):
+        created = self.store.create(
+            employee_id="E004",
+            name="王五",
+            phone="13800138004",
+            department="产品部",
+        )
+        self.assertEqual(created["name"], "王五")
+        self.assertEqual(len(self.store.list_all("产品")), 1)
+
+        updated = self.store.update(
+            "E004",
+            employee_id="E005",
+            name="王五",
+            phone="13800138005",
+            department="市场部",
+        )
+        self.assertEqual(updated["employee_id"], "E005")
+        self.assertEqual(self.store.find(employee_id="E004")["status"], "not_found")
+        self.assertEqual(self.store.find(employee_id="E005")["status"], "found")
+
+        with self.assertRaises(DuplicatePersonError):
+            self.store.create(
+                employee_id="E005",
+                name="重复员工",
+                phone="13800138999",
+                department="市场部",
+            )
+
+        self.store.delete("E005")
+        with self.assertRaises(PersonNotFoundError):
+            self.store.delete("E005")
 
     def test_tool_exposes_find_person_schema_and_returns_structured_result(self):
         find_person = create_find_person_tool(self.store)

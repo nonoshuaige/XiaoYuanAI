@@ -1,0 +1,966 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>员工沙箱 · 小原 AI</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --accent: #176b5b;
+      --accent-strong: #0e5448;
+      --accent-soft: #e8f4f0;
+      --ink: #202723;
+      --muted: #6c7770;
+      --line: #dfe6e1;
+      --canvas: #f4f7f4;
+      --surface: #fff;
+      --danger: #b72f42;
+      --danger-soft: #fff0f2;
+      --shadow: 0 18px 55px rgba(33, 58, 47, .1);
+    }
+    * { box-sizing: border-box; }
+    html { min-height: 100%; }
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      color: var(--ink);
+      background: var(--canvas);
+      font-family: "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, input:focus-visible, a:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .page {
+      width: min(1380px, 100%);
+      min-height: 100dvh;
+      margin: 0 auto;
+      border-inline: 1px solid var(--line);
+      background: rgba(255, 255, 255, .5);
+    }
+    .topbar {
+      min-height: 78px;
+      padding: 16px clamp(18px, 4vw, 44px);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, .9);
+      backdrop-filter: blur(16px);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      border-radius: 13px;
+      color: white;
+      background: var(--accent);
+      box-shadow: 0 8px 22px rgba(23, 107, 91, .2);
+      font-size: 16px;
+      font-weight: 760;
+    }
+    .brand h1 { margin: 0; font-size: 17px; letter-spacing: -.02em; }
+    .brand p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    .topbar-actions { display: flex; align-items: center; gap: 12px; }
+    .environment {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .environment-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #5b8b67;
+      box-shadow: 0 0 0 4px rgba(91, 139, 103, .12);
+    }
+    .back-link {
+      min-height: 38px;
+      padding: 0 14px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--ink);
+      background: var(--surface);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 650;
+      transition: transform .18s cubic-bezier(.16, 1, .3, 1), border-color .18s ease;
+    }
+    .back-link:hover { border-color: #aecfc6; }
+    .back-link:active { transform: scale(.98); }
+    .back-link svg { width: 16px; height: 16px; }
+    .content {
+      padding: clamp(24px, 5vw, 54px) clamp(18px, 4vw, 44px) 56px;
+    }
+    .intro {
+      padding-bottom: 28px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: end;
+      gap: 28px;
+      border-bottom: 1px solid var(--line);
+    }
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 760;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .intro h2 {
+      max-width: 680px;
+      margin: 0;
+      font-size: clamp(28px, 4.3vw, 48px);
+      line-height: 1.04;
+      letter-spacing: -.045em;
+    }
+    .intro-copy {
+      max-width: 620px;
+      margin: 15px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.7;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(92px, 1fr));
+      gap: 1px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--line);
+    }
+    .stat { min-width: 112px; padding: 15px 18px; background: var(--surface); }
+    .stat strong { display: block; font-size: 22px; letter-spacing: -.03em; }
+    .stat span { color: var(--muted); font-size: 11px; }
+    .toolbar {
+      padding: 24px 0 18px;
+      display: grid;
+      grid-template-columns: minmax(220px, 420px) auto;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+    }
+    .search-wrap { position: relative; }
+    .search-wrap > svg {
+      width: 17px;
+      height: 17px;
+      position: absolute;
+      top: 50%;
+      left: 14px;
+      color: var(--muted);
+      transform: translateY(-50%);
+      pointer-events: none;
+    }
+    .search {
+      width: 100%;
+      height: 44px;
+      padding: 0 42px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      color: var(--ink);
+      background: var(--surface);
+    }
+    .search::placeholder { color: #949e98; }
+    .search:focus { border-color: var(--accent); }
+    .clear-search {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      position: absolute;
+      top: 7px;
+      right: 7px;
+      border: 0;
+      border-radius: 8px;
+      color: var(--muted);
+      background: transparent;
+    }
+    .clear-search:hover { color: var(--accent); background: var(--accent-soft); }
+    .primary-button {
+      min-height: 44px;
+      padding: 0 18px;
+      border: 1px solid var(--accent);
+      border-radius: 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: white;
+      background: var(--accent);
+      font-weight: 700;
+      transition: transform .18s cubic-bezier(.16, 1, .3, 1), background .18s ease;
+    }
+    .primary-button:hover { background: var(--accent-strong); }
+    .primary-button:active { transform: scale(.98); }
+    .primary-button:disabled { cursor: wait; opacity: .62; }
+    .primary-button svg { width: 17px; height: 17px; }
+    .directory {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--surface);
+      box-shadow: 0 12px 35px rgba(35, 60, 48, .06);
+    }
+    .directory-head, .employee-row {
+      display: grid;
+      grid-template-columns: 1.05fr .8fr 1.2fr 1fr 92px;
+      align-items: center;
+      gap: 18px;
+    }
+    .directory-head {
+      min-height: 45px;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      background: #f7f9f7;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .04em;
+    }
+    .employee-list { min-height: 90px; }
+    .employee-row {
+      min-height: 70px;
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--line);
+      transition: background .15s ease;
+    }
+    .employee-row:last-child { border-bottom: 0; }
+    .employee-row:hover { background: #fbfdfb; }
+    .employee-cell { min-width: 0; }
+    .employee-cell strong, .employee-cell span {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .employee-cell strong { font-size: 13px; }
+    .employee-cell span { color: var(--muted); font-size: 13px; }
+    .cell-label { display: none; }
+    .department-pill {
+      width: fit-content;
+      max-width: 100%;
+      padding: 5px 9px;
+      border-radius: 999px;
+      color: var(--accent-strong) !important;
+      background: var(--accent-soft);
+      font-size: 12px !important;
+      font-weight: 650;
+    }
+    .row-actions { display: flex; justify-content: flex-end; gap: 5px; }
+    .icon-button {
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      border: 0;
+      border-radius: 9px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      background: transparent;
+      transition: transform .15s ease, background .15s ease, color .15s ease;
+    }
+    .icon-button:hover { color: var(--accent); background: var(--accent-soft); }
+    .icon-button.danger:hover { color: var(--danger); background: var(--danger-soft); }
+    .icon-button:active { transform: scale(.96); }
+    .icon-button svg { width: 16px; height: 16px; }
+    .state {
+      min-height: 240px;
+      padding: 38px 20px;
+      display: grid;
+      place-items: center;
+      text-align: center;
+    }
+    .state[hidden] { display: none; }
+    .state-mark {
+      width: 46px;
+      height: 46px;
+      margin: 0 auto 14px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      color: var(--muted);
+      background: #f8faf8;
+    }
+    .state-mark svg { width: 21px; height: 21px; }
+    .state h3 { margin: 0 0 7px; font-size: 15px; }
+    .state p { margin: 0; color: var(--muted); font-size: 13px; }
+    .skeleton-list { padding: 8px 20px; }
+    .skeleton-row {
+      height: 70px;
+      display: grid;
+      grid-template-columns: 1.05fr .8fr 1.2fr 1fr 92px;
+      align-items: center;
+      gap: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    .skeleton-row:last-child { border-bottom: 0; }
+    .skeleton-bar {
+      height: 12px;
+      border-radius: 8px;
+      background: #e8ede9;
+      animation: breathe 1.3s ease-in-out infinite alternate;
+    }
+    .skeleton-bar:nth-child(2) { width: 66%; }
+    .skeleton-bar:nth-child(4) { width: 72%; }
+    @keyframes breathe { from { opacity: .55; } to { opacity: 1; } }
+    dialog {
+      width: min(520px, calc(100% - 28px));
+      max-height: calc(100dvh - 36px);
+      margin: auto;
+      padding: 0;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      color: var(--ink);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    dialog::backdrop {
+      background: rgba(28, 36, 32, .38);
+      backdrop-filter: blur(4px);
+    }
+    .dialog-header {
+      padding: 22px 24px 17px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    .dialog-header h2 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
+    .dialog-header p { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+    .dialog-close {
+      flex: 0 0 auto;
+      width: 32px;
+      height: 32px;
+      padding: 0;
+      border: 0;
+      border-radius: 9px;
+      color: var(--muted);
+      background: #f3f6f3;
+    }
+    .dialog-close:hover { color: var(--ink); }
+    .form-grid {
+      padding: 22px 24px 8px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 17px 16px;
+    }
+    .field { min-width: 0; display: grid; gap: 7px; }
+    .field label { font-size: 12px; font-weight: 700; }
+    .field input {
+      width: 100%;
+      height: 42px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--ink);
+      background: white;
+    }
+    .field input:focus { border-color: var(--accent); }
+    .field-hint { color: var(--muted); font-size: 11px; }
+    .form-error {
+      min-height: 18px;
+      margin: 0;
+      padding: 0 24px;
+      color: var(--danger);
+      font-size: 12px;
+    }
+    .dialog-actions {
+      padding: 16px 24px 22px;
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+    .secondary-button, .danger-button {
+      min-height: 40px;
+      padding: 0 16px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      color: var(--ink);
+      background: white;
+      font-weight: 650;
+    }
+    .secondary-button:active, .danger-button:active { transform: scale(.98); }
+    .danger-button {
+      border-color: var(--danger);
+      color: white;
+      background: var(--danger);
+    }
+    .danger-button:disabled { cursor: wait; opacity: .62; }
+    .delete-copy {
+      padding: 22px 24px 4px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.7;
+    }
+    .delete-copy strong { color: var(--ink); }
+    .toast {
+      max-width: min(420px, calc(100% - 32px));
+      min-height: 46px;
+      padding: 12px 16px;
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      z-index: 60;
+      border: 1px solid #b7d1c2;
+      border-radius: 12px;
+      color: #24472e;
+      background: #f0f8f2;
+      box-shadow: var(--shadow);
+      font-size: 13px;
+      transform: translateY(12px);
+      opacity: 0;
+      pointer-events: none;
+      transition: transform .22s cubic-bezier(.16, 1, .3, 1), opacity .18s ease;
+    }
+    .toast.visible { transform: translateY(0); opacity: 1; }
+    .toast.error { border-color: #ecc2c9; color: #812233; background: #fff4f5; }
+    @media (max-width: 820px) {
+      .environment { display: none; }
+      .intro { grid-template-columns: 1fr; align-items: start; }
+      .stats { width: 100%; }
+      .stat { min-width: 0; }
+      .toolbar { grid-template-columns: 1fr; }
+      .primary-button { width: 100%; }
+      .directory-head { display: none; }
+      .employee-list { padding: 0 16px; }
+      .employee-row {
+        padding: 17px 0;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px 20px;
+      }
+      .employee-cell { display: grid; gap: 4px; }
+      .cell-label {
+        display: block;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: .06em;
+      }
+      .row-actions { grid-column: 1 / -1; justify-content: flex-start; }
+      .icon-button {
+        width: auto;
+        min-width: 72px;
+        padding: 0 11px;
+        display: inline-flex;
+        gap: 7px;
+        border: 1px solid var(--line);
+      }
+      .icon-button::after {
+        content: attr(data-label);
+        font-size: 12px;
+        font-weight: 650;
+      }
+      .skeleton-row { grid-template-columns: 1fr 1fr; }
+      .skeleton-row > :nth-child(n+3) { display: none; }
+    }
+    @media (max-width: 540px) {
+      .topbar { padding: 13px 15px; }
+      .brand p { display: none; }
+      .back-link span { display: none; }
+      .back-link { width: 40px; padding: 0; justify-content: center; }
+      .content { padding: 27px 14px 40px; }
+      .intro h2 { font-size: 31px; }
+      .form-grid { grid-template-columns: 1fr; }
+      .dialog-actions { display: grid; grid-template-columns: 1fr 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">原</div>
+        <div>
+          <h1>员工沙箱</h1>
+          <p>小原 AI · 虚构通讯录管理</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span class="environment">
+          <span class="environment-dot" aria-hidden="true"></span>
+          沙箱数据库已连接
+        </span>
+        <a class="back-link" href="/">
+          <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <path d="m12.5 5-5 5 5 5" stroke="currentColor" stroke-width="1.7"
+              stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>返回对话</span>
+        </a>
+      </div>
+    </header>
+
+    <main class="content">
+      <section class="intro" aria-labelledby="pageTitle">
+        <div>
+          <p class="eyebrow">Employee directory</p>
+          <h2 id="pageTitle">在这里修改，<br>下一次找人立即生效。</h2>
+          <p class="intro-copy">
+            所有变更直接保存到当前沙箱 SQLite 数据库。工号和手机号必须唯一，
+            姓名允许重复，部门可用于重名消歧。
+          </p>
+        </div>
+        <div class="stats" aria-label="通讯录统计">
+          <div class="stat">
+            <strong id="peopleCount">—</strong>
+            <span>员工记录</span>
+          </div>
+          <div class="stat">
+            <strong id="departmentCount">—</strong>
+            <span>覆盖部门</span>
+          </div>
+        </div>
+      </section>
+
+      <section aria-labelledby="directoryTitle">
+        <div class="toolbar">
+          <div class="search-wrap">
+            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <circle cx="8.7" cy="8.7" r="5.2" stroke="currentColor" stroke-width="1.6"/>
+              <path d="m12.6 12.6 3.8 3.8" stroke="currentColor" stroke-width="1.6"
+                stroke-linecap="round"/>
+            </svg>
+            <input class="search" id="searchInput" type="search"
+              placeholder="搜索工号、姓名、手机号或部门" autocomplete="off"
+              aria-label="搜索员工">
+            <button class="clear-search" id="clearSearch" type="button"
+              aria-label="清空搜索" hidden>×</button>
+          </div>
+          <button class="primary-button" id="addPerson" type="button">
+            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.7"
+                stroke-linecap="round"/>
+            </svg>
+            新增员工
+          </button>
+        </div>
+
+        <div class="directory">
+          <div class="directory-head" id="directoryTitle">
+            <span>工号</span><span>姓名</span><span>手机号</span>
+            <span>部门</span><span>操作</span>
+          </div>
+          <div class="skeleton-list" id="loadingState" aria-label="正在加载员工">
+            <div class="skeleton-row">
+              <span class="skeleton-bar"></span><span class="skeleton-bar"></span>
+              <span class="skeleton-bar"></span><span class="skeleton-bar"></span><span></span>
+            </div>
+            <div class="skeleton-row">
+              <span class="skeleton-bar"></span><span class="skeleton-bar"></span>
+              <span class="skeleton-bar"></span><span class="skeleton-bar"></span><span></span>
+            </div>
+            <div class="skeleton-row">
+              <span class="skeleton-bar"></span><span class="skeleton-bar"></span>
+              <span class="skeleton-bar"></span><span class="skeleton-bar"></span><span></span>
+            </div>
+          </div>
+          <div class="employee-list" id="employeeList" aria-live="polite" hidden></div>
+          <div class="state" id="emptyState" hidden>
+            <div>
+              <div class="state-mark" aria-hidden="true">
+                <svg viewBox="0 0 20 20" fill="none">
+                  <path d="M5 16v-1.4A3.6 3.6 0 0 1 8.6 11h2.8a3.6 3.6 0 0 1 3.6 3.6V16M10 8.2A2.6 2.6 0 1 0 10 3a2.6 2.6 0 0 0 0 5.2Z"
+                    stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+              </div>
+              <h3 id="emptyTitle">还没有员工</h3>
+              <p id="emptyCopy">点击“新增员工”写入第一条沙箱数据。</p>
+            </div>
+          </div>
+          <div class="state" id="errorState" hidden>
+            <div>
+              <div class="state-mark" aria-hidden="true">!</div>
+              <h3>数据加载失败</h3>
+              <p id="errorCopy">请确认沙箱服务正在运行。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="personDialog" aria-labelledby="personDialogTitle">
+    <form id="personForm">
+      <div class="dialog-header">
+        <div>
+          <h2 id="personDialogTitle">新增员工</h2>
+          <p id="personDialogSubtitle">填写四项信息并保存到沙箱数据库。</p>
+        </div>
+        <button class="dialog-close" id="closePersonDialog" type="button"
+          aria-label="关闭">×</button>
+      </div>
+      <div class="form-grid">
+        <div class="field">
+          <label for="employeeId">工号</label>
+          <input id="employeeId" name="employee_id" required maxlength="32"
+            placeholder="例如 XY-S011" autocomplete="off">
+          <span class="field-hint">唯一，可在编辑时修改</span>
+        </div>
+        <div class="field">
+          <label for="personName">姓名</label>
+          <input id="personName" name="name" required maxlength="50"
+            placeholder="例如 林晓" autocomplete="off">
+          <span class="field-hint">允许重名</span>
+        </div>
+        <div class="field">
+          <label for="personPhone">手机号</label>
+          <input id="personPhone" name="phone" type="tel" required maxlength="32"
+            placeholder="例如 13800000011" autocomplete="off">
+          <span class="field-hint">必须唯一</span>
+        </div>
+        <div class="field">
+          <label for="personDepartment">部门</label>
+          <input id="personDepartment" name="department" required maxlength="80"
+            placeholder="例如 研发部" autocomplete="off">
+          <span class="field-hint">用于姓名消歧</span>
+        </div>
+      </div>
+      <p class="form-error" id="formError" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button class="secondary-button" id="cancelPerson" type="button">取消</button>
+        <button class="primary-button" id="savePerson" type="submit">保存员工</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="deleteDialog" aria-labelledby="deleteDialogTitle">
+    <div class="dialog-header">
+      <div>
+        <h2 id="deleteDialogTitle">删除这位员工？</h2>
+        <p>删除后，找人工具将无法再查询到这条记录。</p>
+      </div>
+      <button class="dialog-close" id="closeDeleteDialog" type="button"
+        aria-label="关闭">×</button>
+    </div>
+    <div class="delete-copy" id="deleteCopy"></div>
+    <p class="form-error" id="deleteError" aria-live="polite"></p>
+    <div class="dialog-actions">
+      <button class="secondary-button" id="cancelDelete" type="button">取消</button>
+      <button class="danger-button" id="confirmDelete" type="button">确认删除</button>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const employeeList = document.querySelector("#employeeList");
+    const loadingState = document.querySelector("#loadingState");
+    const emptyState = document.querySelector("#emptyState");
+    const errorState = document.querySelector("#errorState");
+    const errorCopy = document.querySelector("#errorCopy");
+    const emptyTitle = document.querySelector("#emptyTitle");
+    const emptyCopy = document.querySelector("#emptyCopy");
+    const peopleCount = document.querySelector("#peopleCount");
+    const departmentCount = document.querySelector("#departmentCount");
+    const searchInput = document.querySelector("#searchInput");
+    const clearSearch = document.querySelector("#clearSearch");
+    const addPersonButton = document.querySelector("#addPerson");
+    const personDialog = document.querySelector("#personDialog");
+    const personForm = document.querySelector("#personForm");
+    const personDialogTitle = document.querySelector("#personDialogTitle");
+    const personDialogSubtitle = document.querySelector("#personDialogSubtitle");
+    const closePersonDialog = document.querySelector("#closePersonDialog");
+    const cancelPerson = document.querySelector("#cancelPerson");
+    const savePerson = document.querySelector("#savePerson");
+    const formError = document.querySelector("#formError");
+    const deleteDialog = document.querySelector("#deleteDialog");
+    const closeDeleteDialog = document.querySelector("#closeDeleteDialog");
+    const cancelDelete = document.querySelector("#cancelDelete");
+    const confirmDelete = document.querySelector("#confirmDelete");
+    const deleteCopy = document.querySelector("#deleteCopy");
+    const deleteError = document.querySelector("#deleteError");
+    const toast = document.querySelector("#toast");
+
+    let people = [];
+    let editingEmployeeId = null;
+    let pendingDelete = null;
+    let searchTimer = null;
+    let toastTimer = null;
+
+    async function api(url, options = {}) {
+      const response = await fetch(url, {
+        ...options,
+        headers: {
+          ...(options.body ? {"Content-Type": "application/json"} : {}),
+          ...(options.headers || {}),
+        },
+      });
+      if (response.status === 204) return null;
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = Array.isArray(data.detail)
+          ? data.detail.map(item => item.msg).join("；")
+          : data.detail;
+        throw new Error(detail || "请求失败，请稍后重试");
+      }
+      return data;
+    }
+
+    function icon(type) {
+      const paths = {
+        edit: '<path d="M4 14.5V16h1.5L15.9 5.6a1.06 1.06 0 0 0 0-1.5 1.06 1.06 0 0 0-1.5 0L4 14.5Zm8.9-8.9 1.5 1.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+        delete: '<path d="M4.5 6h11M8 6V4.5h4V6m-6 0 .65 10h6.7L14 6M8.5 9v4m3-4v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+      };
+      return `<svg viewBox="0 0 20 20" fill="none" aria-hidden="true">${paths[type]}</svg>`;
+    }
+
+    function textCell(label, value, strong = false) {
+      const cell = document.createElement("div");
+      cell.className = "employee-cell";
+      const labelElement = document.createElement("small");
+      labelElement.className = "cell-label";
+      labelElement.textContent = label;
+      const valueElement = document.createElement(strong ? "strong" : "span");
+      valueElement.textContent = value;
+      cell.append(labelElement, valueElement);
+      return cell;
+    }
+
+    function renderPeople() {
+      employeeList.replaceChildren();
+      peopleCount.textContent = String(people.length);
+      departmentCount.textContent = String(
+        new Set(people.map(person => person.department)).size
+      );
+      if (!people.length) {
+        employeeList.hidden = true;
+        emptyState.hidden = false;
+        if (searchInput.value.trim()) {
+          emptyTitle.textContent = "没有匹配结果";
+          emptyCopy.textContent = "换一个工号、姓名、手机号或部门关键词试试。";
+        } else {
+          emptyTitle.textContent = "还没有员工";
+          emptyCopy.textContent = "点击“新增员工”写入第一条沙箱数据。";
+        }
+        return;
+      }
+      emptyState.hidden = true;
+      employeeList.hidden = false;
+      for (const person of people) {
+        const row = document.createElement("article");
+        row.className = "employee-row";
+        row.append(
+          textCell("工号", person.employee_id, true),
+          textCell("姓名", person.name, true),
+          textCell("手机号", person.phone),
+        );
+        const departmentCell = document.createElement("div");
+        departmentCell.className = "employee-cell";
+        const departmentLabel = document.createElement("small");
+        departmentLabel.className = "cell-label";
+        departmentLabel.textContent = "部门";
+        const department = document.createElement("span");
+        department.className = "department-pill";
+        department.textContent = person.department;
+        departmentCell.append(departmentLabel, department);
+
+        const actions = document.createElement("div");
+        actions.className = "row-actions";
+        const editButton = document.createElement("button");
+        editButton.className = "icon-button";
+        editButton.type = "button";
+        editButton.dataset.label = "编辑";
+        editButton.title = "编辑";
+        editButton.setAttribute("aria-label", `编辑 ${person.name}`);
+        editButton.innerHTML = icon("edit");
+        editButton.addEventListener("click", () => openEditDialog(person));
+        const deleteButton = document.createElement("button");
+        deleteButton.className = "icon-button danger";
+        deleteButton.type = "button";
+        deleteButton.dataset.label = "删除";
+        deleteButton.title = "删除";
+        deleteButton.setAttribute("aria-label", `删除 ${person.name}`);
+        deleteButton.innerHTML = icon("delete");
+        deleteButton.addEventListener("click", () => openDeleteDialog(person));
+        actions.append(editButton, deleteButton);
+        row.append(departmentCell, actions);
+        employeeList.appendChild(row);
+      }
+    }
+
+    async function loadPeople() {
+      loadingState.hidden = false;
+      employeeList.hidden = true;
+      emptyState.hidden = true;
+      errorState.hidden = true;
+      const query = searchInput.value.trim();
+      try {
+        people = await api(
+          `/api/sandbox/people${query ? `?search=${encodeURIComponent(query)}` : ""}`
+        );
+        renderPeople();
+      } catch (error) {
+        people = [];
+        peopleCount.textContent = "—";
+        departmentCount.textContent = "—";
+        errorCopy.textContent = error.message;
+        errorState.hidden = false;
+      } finally {
+        loadingState.hidden = true;
+      }
+    }
+
+    function openAddDialog() {
+      editingEmployeeId = null;
+      personForm.reset();
+      formError.textContent = "";
+      personDialogTitle.textContent = "新增员工";
+      personDialogSubtitle.textContent = "填写四项信息并保存到沙箱数据库。";
+      savePerson.textContent = "保存员工";
+      personDialog.showModal();
+      document.querySelector("#employeeId").focus();
+    }
+
+    function openEditDialog(person) {
+      editingEmployeeId = person.employee_id;
+      personForm.elements.employee_id.value = person.employee_id;
+      personForm.elements.name.value = person.name;
+      personForm.elements.phone.value = person.phone;
+      personForm.elements.department.value = person.department;
+      formError.textContent = "";
+      personDialogTitle.textContent = "编辑员工";
+      personDialogSubtitle.textContent = `正在修改 ${person.employee_id} 的沙箱记录。`;
+      savePerson.textContent = "保存修改";
+      personDialog.showModal();
+      document.querySelector("#personName").focus();
+    }
+
+    function closePerson() {
+      if (!savePerson.disabled) personDialog.close();
+    }
+
+    function openDeleteDialog(person) {
+      pendingDelete = person;
+      deleteError.textContent = "";
+      deleteCopy.replaceChildren(
+        document.createTextNode("即将删除 "),
+        Object.assign(document.createElement("strong"), {
+          textContent: `${person.name}（${person.employee_id}）`,
+        }),
+        document.createTextNode("。该操作会立即写入沙箱数据库，且无法撤销。"),
+      );
+      deleteDialog.showModal();
+      confirmDelete.focus();
+    }
+
+    function closeDelete() {
+      if (!confirmDelete.disabled) {
+        deleteDialog.close();
+        pendingDelete = null;
+      }
+    }
+
+    function showToast(message, isError = false) {
+      clearTimeout(toastTimer);
+      toast.textContent = message;
+      toast.classList.toggle("error", isError);
+      toast.classList.add("visible");
+      toastTimer = setTimeout(() => toast.classList.remove("visible"), 2600);
+    }
+
+    personForm.addEventListener("submit", async event => {
+      event.preventDefault();
+      if (!personForm.reportValidity()) return;
+      const payload = Object.fromEntries(new FormData(personForm));
+      savePerson.disabled = true;
+      savePerson.textContent = editingEmployeeId ? "保存中…" : "写入中…";
+      formError.textContent = "";
+      try {
+        const editing = Boolean(editingEmployeeId);
+        await api(
+          editing
+            ? `/api/sandbox/people/${encodeURIComponent(editingEmployeeId)}`
+            : "/api/sandbox/people",
+          {
+            method: editing ? "PUT" : "POST",
+            body: JSON.stringify(payload),
+          },
+        );
+        personDialog.close();
+        showToast(editing ? "员工信息已更新" : "新员工已写入沙箱");
+        await loadPeople();
+      } catch (error) {
+        formError.textContent = error.message;
+      } finally {
+        savePerson.disabled = false;
+        savePerson.textContent = editingEmployeeId ? "保存修改" : "保存员工";
+      }
+    });
+
+    confirmDelete.addEventListener("click", async () => {
+      if (!pendingDelete) return;
+      confirmDelete.disabled = true;
+      confirmDelete.textContent = "删除中…";
+      deleteError.textContent = "";
+      try {
+        await api(
+          `/api/sandbox/people/${encodeURIComponent(pendingDelete.employee_id)}`,
+          {method: "DELETE"},
+        );
+        deleteDialog.close();
+        showToast("员工记录已删除");
+        pendingDelete = null;
+        await loadPeople();
+      } catch (error) {
+        deleteError.textContent = error.message;
+      } finally {
+        confirmDelete.disabled = false;
+        confirmDelete.textContent = "确认删除";
+      }
+    });
+
+    searchInput.addEventListener("input", () => {
+      clearSearch.hidden = !searchInput.value;
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(loadPeople, 220);
+    });
+    clearSearch.addEventListener("click", () => {
+      searchInput.value = "";
+      clearSearch.hidden = true;
+      searchInput.focus();
+      loadPeople();
+    });
+    addPersonButton.addEventListener("click", openAddDialog);
+    closePersonDialog.addEventListener("click", closePerson);
+    cancelPerson.addEventListener("click", closePerson);
+    closeDeleteDialog.addEventListener("click", closeDelete);
+    cancelDelete.addEventListener("click", closeDelete);
+    personDialog.addEventListener("cancel", event => {
+      if (savePerson.disabled) event.preventDefault();
+    });
+    deleteDialog.addEventListener("cancel", event => {
+      if (confirmDelete.disabled) event.preventDefault();
+    });
+
+    loadPeople();
+  </script>
+</body>
+</html>

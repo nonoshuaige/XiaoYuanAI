@@ -13,6 +13,14 @@ from pydantic import BaseModel, Field, model_validator
 from conversation_store import DEFAULT_DB_PATH
 
 
+class DuplicatePersonError(ValueError):
+    """A create or update conflicts with an existing employee."""
+
+
+class PersonNotFoundError(LookupError):
+    """The requested employee ID does not exist."""
+
+
 class FindPersonInput(BaseModel):
     """Validated clues extracted from the user's natural-language request."""
 
@@ -108,6 +116,110 @@ class PeopleStore:
                 """,
                 values,
             )
+
+    def list_all(self, search: str | None = None) -> list[dict[str, str]]:
+        """List employees, optionally filtering across all visible fields."""
+        normalized_search = _clean(search)
+        sql = (
+            "SELECT employee_id, name, phone, department "
+            "FROM people"
+        )
+        parameters: list[str] = []
+        if normalized_search:
+            escaped = (
+                normalized_search.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+            pattern = f"%{escaped}%"
+            sql += (
+                " WHERE employee_id LIKE ? ESCAPE '\\' "
+                "OR name LIKE ? ESCAPE '\\' "
+                "OR phone LIKE ? ESCAPE '\\' "
+                "OR department LIKE ? ESCAPE '\\'"
+            )
+            parameters.extend([pattern] * 4)
+        sql += " ORDER BY employee_id LIMIT 500"
+        with self._connect() as connection:
+            rows = connection.execute(sql, parameters).fetchall()
+        return [dict(row) for row in rows]
+
+    def create(
+        self,
+        *,
+        employee_id: str,
+        name: str,
+        phone: str,
+        department: str,
+    ) -> dict[str, str]:
+        """Create one employee and reject duplicate IDs or phone numbers."""
+        values = _person_values(
+            employee_id=employee_id,
+            name=name,
+            phone=phone,
+            department=department,
+        )
+        try:
+            with self._write_lock, self._connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO people(employee_id, name, phone, department)
+                    VALUES (:employee_id, :name, :phone, :department)
+                    """,
+                    values,
+                )
+        except sqlite3.IntegrityError as exc:
+            raise DuplicatePersonError("工号或手机号已存在") from exc
+        return values
+
+    def update(
+        self,
+        current_employee_id: str,
+        *,
+        employee_id: str,
+        name: str,
+        phone: str,
+        department: str,
+    ) -> dict[str, str]:
+        """Replace all editable fields, including the employee ID."""
+        current_employee_id = current_employee_id.strip()
+        values = _person_values(
+            employee_id=employee_id,
+            name=name,
+            phone=phone,
+            department=department,
+        )
+        try:
+            with self._write_lock, self._connect() as connection:
+                cursor = connection.execute(
+                    """
+                    UPDATE people
+                    SET employee_id = :employee_id,
+                        name = :name,
+                        phone = :phone,
+                        department = :department
+                    WHERE employee_id = :current_employee_id
+                    """,
+                    {**values, "current_employee_id": current_employee_id},
+                )
+                if cursor.rowcount == 0:
+                    raise PersonNotFoundError(
+                        f"员工 {current_employee_id} 不存在"
+                    )
+        except sqlite3.IntegrityError as exc:
+            raise DuplicatePersonError("工号或手机号已存在") from exc
+        return values
+
+    def delete(self, employee_id: str) -> None:
+        """Delete one employee by exact employee ID."""
+        employee_id = employee_id.strip()
+        with self._write_lock, self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM people WHERE employee_id = ?",
+                (employee_id,),
+            )
+            if cursor.rowcount == 0:
+                raise PersonNotFoundError(f"员工 {employee_id} 不存在")
 
     def find(
         self,
@@ -209,6 +321,24 @@ def _clean(value: str | None) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def _person_values(
+    *,
+    employee_id: str,
+    name: str,
+    phone: str,
+    department: str,
+) -> dict[str, str]:
+    values = {
+        "employee_id": employee_id.strip(),
+        "name": name.strip(),
+        "phone": phone.strip(),
+        "department": department.strip(),
+    }
+    if not all(values.values()):
+        raise ValueError("工号、姓名、手机号、部门均不能为空")
+    return values
 
 
 _FIELD_LABELS = {

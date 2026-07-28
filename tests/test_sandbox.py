@@ -56,6 +56,52 @@ class SandboxTests(unittest.TestCase):
                     "found",
                 )
 
+            store.update(
+                "XY-S001",
+                employee_id="XY-S001",
+                name="用户修改后姓名",
+                phone="13800000001",
+                department="用户修改后部门",
+            )
+            repeated = subprocess.run(
+                [
+                    str(PYTHON),
+                    "sandbox.py",
+                    "--seed-only",
+                    "--db",
+                    str(db_path),
+                ],
+                cwd=PROJECT_DIR,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("已保留沙箱中的 10 条", repeated.stdout)
+            preserved = store.find(employee_id="XY-S001")["people"][0]
+            self.assertEqual(preserved["name"], "用户修改后姓名")
+            self.assertEqual(preserved["department"], "用户修改后部门")
+
+            for person in store.list_all():
+                store.delete(person["employee_id"])
+            empty_restart = subprocess.run(
+                [
+                    str(PYTHON),
+                    "sandbox.py",
+                    "--seed-only",
+                    "--db",
+                    str(db_path),
+                ],
+                cwd=PROJECT_DIR,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("已保留沙箱中的 0 条", empty_restart.stdout)
+            self.assertEqual(store.list_all(), [])
+
 
 if __name__ == "__main__":
     unittest.main()
