@@ -146,6 +146,9 @@ class PeopleStoreTests(unittest.TestCase):
         result = find_person.invoke({"employee_id": " E003 ", "name": "张三"})
 
         self.assertEqual(find_person.name, "find_person")
+        self.assertIn("仅当用户明确要求找人", find_person.description)
+        self.assertIn("没有上述线索时不要调用", find_person.description)
+        self.assertIn("自我介绍、寒暄", find_person.description)
         self.assertEqual(result["matched_by"], "employee_id")
         self.assertEqual(result["people"][0]["employee_id"], "E003")
 

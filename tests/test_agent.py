@@ -125,6 +125,18 @@ class AgentRuntimeTests(unittest.TestCase):
             prompt.index("# 当前已接入工具"),
         )
 
+    def test_find_person_prompt_requires_intent_and_identity_clue(self):
+        people_store = PeopleStore(Path(self.temp_dir.name) / "people.db")
+        prompt = build_system_prompt(
+            [create_find_person_tool(people_store)]
+        )
+
+        self.assertIn("调用工具必须同时满足两个条件", prompt)
+        self.assertIn("明确提出找人、查人、确认人员或查询员工联系方式", prompt)
+        self.assertIn("尚未提供上述身份线索时，不要调用工具", prompt)
+        self.assertIn("自我介绍、寒暄、署名、写作或翻译内容", prompt)
+        self.assertIn("未调用工具时不得编造查询结果", prompt)
+
     def test_full_transcript_persists_after_store_recreation(self):
         runtime = self.make_runtime(
             FakeListChatModel(responses=["你好，我是小原。", "第二轮回复"])
