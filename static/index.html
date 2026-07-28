@@ -138,9 +138,34 @@
     .chat-header {
       padding: 17px 24px;
       border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
     }
     .chat-header h1 { margin: 0; font-size: 18px; }
     .chat-header p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+    .model-picker {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .model-picker select {
+      max-width: 210px;
+      height: 36px;
+      padding: 0 32px 0 11px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      outline: none;
+      color: var(--ink);
+      background: white;
+      font: inherit;
+      cursor: pointer;
+    }
+    .model-picker select:focus { border-color: var(--blue); }
     .messages {
       min-height: 0;
       overflow-y: auto;
@@ -298,6 +323,10 @@
       .session-item { min-width: 210px; }
       .session-actions { opacity: 1; }
       .bubble { max-width: 88%; }
+      .chat-header { padding: 13px 16px; }
+      .chat-header p { display: none; }
+      .model-picker span { display: none; }
+      .model-picker select { max-width: 150px; }
     }
   </style>
 </head>
@@ -312,8 +341,14 @@
 
   <main class="chat">
     <header class="chat-header">
-      <h1 id="chatTitle">新对话</h1>
-      <p>小原 AI 助手 · 对话已保存在本地</p>
+      <div>
+        <h1 id="chatTitle">新对话</h1>
+        <p>小原 AI 助手 · 对话已保存在本地</p>
+      </div>
+      <label class="model-picker">
+        <span>模型</span>
+        <select id="modelSelect" aria-label="选择对话模型"></select>
+      </label>
     </header>
     <section class="messages" id="messages">
       <div class="welcome">你好，我是小原。现在可以直接和我对话。</div>
@@ -349,12 +384,14 @@
 
 <script>
   const currentSessionKey = "xiaoyuan-current-session";
+  const selectedModelKey = "xiaoyuan-selected-model";
   const sessionList = document.querySelector("#sessionList");
   const messages = document.querySelector("#messages");
   const chatTitle = document.querySelector("#chatTitle");
   const form = document.querySelector("#composer");
   const input = document.querySelector("#input");
   const sendButton = document.querySelector("#send");
+  const modelSelect = document.querySelector("#modelSelect");
   const deleteModal = document.querySelector("#deleteModal");
   const deleteSessionName = document.querySelector("#deleteSessionName");
   const deleteModalError = document.querySelector("#deleteModalError");
@@ -362,6 +399,7 @@
   const confirmDeleteButton = document.querySelector("#confirmDelete");
 
   let sessions = [];
+  let modelOptions = [];
   let currentSessionId = localStorage.getItem(currentSessionKey);
   let sending = false;
   let pendingDeleteSession = null;
@@ -463,6 +501,35 @@
     sessions = await api("/api/sessions");
     renderSessions();
   }
+
+  async function loadModels() {
+    const catalog = await api("/api/models");
+    modelOptions = catalog.filter(model => model.callable);
+    if (!modelOptions.length) {
+      throw new Error("没有已配置且可调用的模型");
+    }
+
+    const savedModel = localStorage.getItem(selectedModelKey);
+    const selected = modelOptions.find(model => model.id === savedModel)
+      || modelOptions.find(model => model.default)
+      || modelOptions[0];
+    modelSelect.replaceChildren();
+    for (const model of modelOptions) {
+      const option = document.createElement("option");
+      option.value = model.id;
+      const status = model.discovered
+        ? (model.source === "cached" ? "缓存发现" : "已发现")
+        : (model.source === "fallback" ? "兜底目录" : "已配置");
+      option.textContent = `${model.provider} · ${model.label} · ${status}`;
+      modelSelect.appendChild(option);
+    }
+    modelSelect.value = selected.id;
+    localStorage.setItem(selectedModelKey, selected.id);
+  }
+
+  modelSelect.addEventListener("change", () => {
+    localStorage.setItem(selectedModelKey, modelSelect.value);
+  });
 
   function showNewConversation() {
     if (sending) return;
@@ -635,11 +702,12 @@
 
     sending = true;
     sendButton.disabled = true;
+    modelSelect.disabled = true;
     input.value = "";
     appendMessage(text, "user");
     const pending = appendMessage("正在思考…", "assistant");
     try {
-      const payload = {message: text};
+      const payload = {message: text, model: modelSelect.value};
       if (currentSessionId) payload.sessionId = currentSessionId;
       const result = await api("/api/chat", {
         method: "POST",
@@ -656,13 +724,14 @@
     } finally {
       sending = false;
       sendButton.disabled = false;
+      modelSelect.disabled = false;
       input.focus();
     }
   });
 
   (async () => {
     try {
-      await refreshSessions();
+      await Promise.all([loadModels(), refreshSessions()]);
       const savedSessionExists = sessions.some(
         session => session.sessionId === currentSessionId
       );

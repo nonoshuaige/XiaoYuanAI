@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import AliasChoices, BaseModel, Field
 
 from agent import get_context, get_runtime, reset_session
+from config import get_model_options
 from conversation_store import conversation_store
 
 
@@ -27,6 +28,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8_000)
+    model: str | None = Field(default=None, min_length=1, max_length=64)
     session_id: str | None = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -54,14 +56,20 @@ async def list_sessions():
     return conversation_store.list_sessions()
 
 
+@app.get("/api/models")
+async def list_models(refresh: bool = False):
+    return await run_in_threadpool(get_model_options, refresh=refresh)
+
+
 @app.post("/api/chat")
 async def chat_endpoint(request: ChatRequest):
     session_id = request.session_id or secrets.token_hex(8)
     try:
         response = await run_in_threadpool(
-            get_runtime().chat,
+            _chat,
             session_id,
             request.message,
+            request.model,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -72,7 +80,17 @@ async def chat_endpoint(request: ChatRequest):
         "sessionId": response.session_id,
         "round": response.round_no,
         "title": conversation_store.get_session(response.session_id)["title"],
+        "model": response.model_id,
     }
+
+
+def _chat(
+    session_id: str,
+    message: str,
+    model_id: str | None,
+):
+    """Keep first-use provider discovery and model loading off the event loop."""
+    return get_runtime().chat(session_id, message, model_id)
 
 
 @app.get("/api/sessions/{session_id}")

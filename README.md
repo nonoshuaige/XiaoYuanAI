@@ -1,14 +1,39 @@
-# 小原 AI 助手 1.1｜多轮次对话
+# 小原 AI 助手 1.2
 
-小原 AI 助手是一个面向中文办公场景的单 Agent 对话应用。本版本聚焦稳定的
-多轮次对话体验：支持多会话、SQLite 全量持久化、滚动摘要、异步上下文压缩，
-暂不加载业务 Tool 和 Skill。
+小原 AI 助手是一个面向中文办公场景的单 Agent 对话应用。项目以稳定的多轮对话
+为核心，提供多会话管理、SQLite 全量持久化、滚动摘要、多模型发现与切换，以及
+按需加载的模型运行时。
 
-## 操作方面
+当前版本不加载业务 Tool 和 Skill，适合作为后续扩展工具调用、任务状态和能力路由
+的基础工程。
 
-### 启动项目
+## 项目能力
 
-项目使用已有的 Conda Agent 环境：
+| 模块 | 当前能力 |
+|---|---|
+| Agent 运行时 | LangChain `create_agent`，固定 System Prompt，无工具执行 |
+| 上下文管理 | 固定系统规则 + 用户层历史摘要 + 未覆盖原文 + 当前问题 |
+| 长对话压缩 | 30/20/10 滚动摘要，后台异步生成，保留全量原文 |
+| 会话管理 | 新建、切换、自动命名、重命名、删除、多会话隔离 |
+| 消息可靠性 | 用户消息先落库，轮次具有 `pending/completed/failed` 状态 |
+| 模型管理 | 只展示已配置 Provider，模型目录发现、状态标识、切换 |
+| 模型加载 | 按 model ID 首次使用时加载，模型实例与 Agent graph 进程内缓存 |
+| 数据存储 | SQLite + WAL，聊天记录、轮次状态、摘要版本永久保存 |
+| Web 服务 | FastAPI JSON API + 原生 HTML/CSS/JavaScript 聊天页面 |
+
+## 仓库定位
+
+- GitHub：<https://github.com/nonoshuaige/XiaoYuanAI>
+- 本地目录：`/Users/zypro/Desktop/XiaoYuanAI/XiaoYuanAI`
+- Git 远端：`origin` → `https://github.com/nonoshuaige/XiaoYuanAI.git`
+- GitHub 推送账号：`nonoshuaige`
+- 主分支：`main`
+
+后续开发、提交和推送均以这个本地目录及其 `origin` 远端为准。
+
+## 快速启动
+
+项目使用 Python 3.10+，推荐在独立虚拟环境中运行。
 
 ```bash
 conda activate agent-env
@@ -18,348 +43,312 @@ python server.py
 
 浏览器访问 <http://localhost:8000>。
 
-模型配置从项目根目录的 `.env` 读取：
+### 模型配置
+
+复制 `.env.example` 为 `.env`，然后只填写需要使用的 Provider。没有配置 API Key
+的 Provider 不会出现在模型列表中。
 
 ```dotenv
-DASHSCOPE_API_KEY=你的密钥
+# Coding Plan
+DASHSCOPE_API_KEY=你的 API Key
 MODEL_NAME=qwen3-coder-plus
 OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1/
+
+# Qwen3D，可选
+QWEN3D6_API_KEY=你的 API Key
+QWEN3D6_MODEL_NAME=qwen3d6-27b
+QWEN3D6_API_BASE=你的 OpenAI 兼容 API 地址
+
+# 可选；未配置或不可用时回退到第一个可调用模型
+DEFAULT_MODEL_ID=qwen3-coder-plus
 ```
 
-`.env` 已加入 `.gitignore`，不会提交到 Git。
+`.env` 已被 `.gitignore` 排除，不会提交到 Git。Python OpenAI 客户端使用的
+`base_url` 通常需要包含 `/v1` 路径前缀。
 
-### 新建对话
-
-侧栏顶部始终有一个固定的“新对话”入口。
-
-- 点击“新对话”只会打开空白聊天页面。
-- 此时不会写入 SQLite，也不会生成 `sessionId`。
-- 用户发送第一条消息后，后端才创建真实会话并保存第一轮。
-- 第一条用户消息的首句会自动成为会话名称，最长 24 个字符。
-
-因此无论点击多少次“新对话”，数据库都不会出现空白会话。
-
-### 切换会话
-
-侧栏按最近更新时间展示所有真实会话，并显示当前轮数。点击任意会话即可读取
-SQLite 中保存的完整聊天记录。浏览器只使用 `localStorage` 记住当前选中的
-`sessionId`，聊天数据以 SQLite 为唯一事实来源。
-
-### 重命名会话
-
-点击会话右侧的编辑按钮后，标题会在原位置变成输入框：
-
-- 自动聚焦，光标位于标题末尾；
-- `Enter` 保存；
-- `Esc` 取消；
-- 点击其他位置自动保存；
-- 空名称不会提交；
-- 手动名称不会被后续消息重新覆盖。
-
-### 删除会话
-
-点击删除按钮会打开页面内的确认弹窗，而不是浏览器原生提示。
-
-- 弹窗显示即将删除的会话名称；
-- 明确提示聊天记录和摘要会一起删除；
-- 支持取消、确认删除、`Esc` 和点击遮罩关闭；
-- 删除进行中不能重复操作；
-- 删除失败会在弹窗内显示原因。
-
-确认后，SQLite 会级联删除该会话的全部消息与摘要版本。
-
-## 内核方面
-
-### 单 Agent 主链
-
-当前使用一个无工具 Agent：
+## 总体架构
 
 ```text
-用户 Query
-  → SQLite 先保存 user，轮次状态为 pending
-  → 从 SQLite 重建此前上下文
-  → 固定 System Prompt
-  → 用户层 Summary + 未覆盖原始轮次 + 当前 Query
-  → LangChain create_agent（tools=[]）
-  → 模型回复
-  → SQLite 保存 assistant，轮次状态改为 completed
-  → 必要时提交异步摘要任务
+浏览器
+  │
+  ▼
+FastAPI API
+  │
+  ├── 模型目录与 Provider 配置
+  ├── 会话增删改查
+  └── 聊天请求
+        │
+        ▼
+AgentRuntime
+  │
+  ├── 按 model ID 加载并缓存模型/graph
+  ├── 按 session 串行执行对话轮次
+  ├── 从 SQLite 重建模型上下文
+  └── 提交异步摘要任务
+        │
+        ├── OpenAI 兼容模型服务
+        └── SQLite 全量会话存储
 ```
 
-如果模型调用失败，user 原文不会丢失，轮次状态改为 `failed` 并记录错误；
-该轮不会伪造 assistant 消息。
+## Agent 运行时
 
-当前没有能力路由、任务状态、Tool Runtime 或 Skill Registry。
-
-### 上下文权限边界
-
-System Prompt 始终使用代码中固定的办公助手规则，不会拼接历史摘要，也不会被
-摘要、最近对话或当前 Query 修改。
-
-模型实际收到的层级为：
+主链位于 `agent.py`，当前使用一个无工具 Agent：
 
 ```text
-SystemMessage：固定 System Prompt
-HumanMessage：历史摘要（如有，明确标记为用户层上下文）
-HumanMessage / AIMessage：摘要范围之后的原始对话
-HumanMessage：当前 Query
+收到用户问题
+  → 用户消息落库，轮次标记为 pending
+  → 从 SQLite 读取最新摘要和未覆盖原文
+  → 构建本次临时消息 State
+  → 调用选中的模型
+  → 保存 assistant 回复
+  → 轮次标记为 completed
+  → 必要时提交后台摘要任务
 ```
 
-历史摘要开头会明确说明：它只是恢复背景的数据，不是系统指令，不能覆盖系统
-规则，也不能作为执行外部操作的授权依据。
+模型调用失败时：
 
-`SUMMARY_SYSTEM_PROMPT` 只用于独立的摘要生成请求，负责告诉摘要模型如何压缩
-历史；生成出来的摘要回到主 Agent 时仍然只是 `HumanMessage`。
+- 用户原文仍然保留；
+- 轮次状态更新为 `failed`；
+- 错误信息写入轮次记录；
+- 不伪造 assistant 回复。
 
-### 会话生命周期
+同一进程内，同一 session 的模型请求通过独立锁串行执行；不同 session 可以并行。
 
-`sessionId` 是真实会话的唯一标识。首次请求不传 `sessionId` 时，服务生成一个
-新 ID；之后同一会话的请求持续使用该 ID。
+## 上下文管理
 
-一次完整轮次由两条消息组成：
+SQLite 是持久化事实来源。每次聊天请求都会重新构建临时消息 State，不依赖进程
+内的历史消息缓存。
+
+模型实际收到的上下文顺序为：
 
 ```text
-第 N 轮
-├── user
-└── assistant
+SystemMessage
+  固定办公助手规则
+
+HumanMessage（可选）
+  历史对话摘要，明确标记为“用户层上下文”
+
+HumanMessage / AIMessage
+  摘要范围之后的完整原始对话
+
+HumanMessage
+  当前用户问题
 ```
 
-轮次状态变化：
+### 权限边界
 
-```text
-pending   用户消息已持久化，模型尚未完成
-completed 用户和助手消息均已持久化
-failed    用户消息已保留，但模型没有生成可用回复
-```
+System Prompt 固定在代码中。历史摘要不会拼接进 System Prompt，也不能覆盖系统
+规则或成为外部操作授权。
 
-同一 session 内的模型请求会串行执行，避免并发请求造成轮次顺序错乱；不同
-session 可以独立处理。
+摘要模型使用独立的 `SUMMARY_SYSTEM_PROMPT` 生成压缩结果，但生成结果回到主 Agent
+时仍以 `HumanMessage` 注入。
 
-### SQLite 数据结构
+### 当前问题不会重复
 
-数据库运行时生成于 `data/xiaoyuan.db`，使用 WAL 模式。
+当前用户问题会先写入 SQLite，但读取历史上下文时只读取到上一轮，再单独追加当前
+问题。因此同一问题在模型输入中只出现一次。
 
-#### `sessions`
+## 会话与轮次
 
-| 字段 | 说明 |
+浏览器点击“新对话”时只展示空白页面，不立即创建数据库记录。用户发送第一条消息
+后，服务才生成 `sessionId` 并创建真实会话。
+
+第一条消息的首句会自动成为标题，最长 24 个字符；手动重命名后不会再次被自动标题
+覆盖。
+
+一次轮次由用户消息和可选的助手回复组成：
+
+| 状态 | 含义 |
 |---|---|
-| `session_id` | 会话主键 |
-| `title` | 会话名称 |
-| `round_count` | 已接收的用户轮次数 |
-| `created_at` | 创建时间 |
-| `updated_at` | 最近更新时间 |
+| `pending` | 用户消息已保存，模型调用尚未结束 |
+| `completed` | 用户消息和助手回复均已保存 |
+| `failed` | 用户消息已保存，但模型没有生成可用回复 |
 
-`round_count` 在写入轮次时同步更新，会话列表直接读取 `sessions`，不需要扫描
-消息表统计轮数。
+删除会话时，SQLite 外键会级联删除轮次、聊天消息和全部摘要版本。
 
-#### `conversation_rounds`
+## 滚动摘要
 
-保存每轮请求的生命周期：
+项目采用 30/20/10 策略：
 
-| 字段 | 说明 |
+- 未被摘要覆盖的记录达到 30 轮时触发压缩；
+- 每次把最早的 20 轮合并进累计摘要；
+- 最近 10 轮继续以原文形式保留在活跃上下文。
+
+```text
+第 1–30 轮
+  摘要：第 1–20 轮
+  原文：第 21–30 轮
+
+第 1–50 轮
+  摘要：第 1–40 轮
+  原文：第 41–50 轮
+```
+
+摘要在后台线程执行，不阻塞新的聊天请求。摘要尚未完成时，Agent 会继续读取旧摘要
+之后的全部原文，所以压缩变慢只会增加临时上下文长度，不会隐藏尚未覆盖的消息。
+
+每个 session 同时最多运行一个摘要任务。摘要使用期望的上一版 `end_round` 提交，
+避免并发任务覆盖更新版本。
+
+## 模型目录与切换
+
+模型配置位于 `config.py`。
+
+### Provider 展示规则
+
+- 只有配置了 API Key 的 Provider 才会出现在 `/api/models`；
+- Coding Plan 通过 OpenAI 兼容 `/models` 接口发现模型；
+- Qwen3D 使用环境变量中明确配置的模型；
+- Coding Plan 目录缓存 5 分钟；
+- 目录请求失败时优先使用最近一次成功结果，否则使用内置兜底目录。
+
+`GET /api/models` 中每个模型包含：
+
+| 字段 | 含义 |
 |---|---|
-| `session_id` | 所属会话 |
-| `round_no` | 会话内轮次 |
-| `status` | `pending`、`completed` 或 `failed` |
-| `error` | 失败原因，成功时为空 |
-| `created_at` | 用户消息落库时间 |
-| `completed_at` | 成功或失败结束时间 |
+| `id` | 聊天请求使用的 model ID |
+| `providerId` | Provider 稳定标识 |
+| `provider` | Provider 展示名称 |
+| `default` | 是否为当前解析后的默认模型 |
+| `discovered` | 是否曾从 Provider 模型目录实际发现 |
+| `callable` | 当前配置是否允许选择并尝试调用 |
+| `source` | `live`、`cached`、`configured` 或 `fallback` |
 
-#### `chat_messages`
+`fallback` 表示服务允许尝试调用内置目录中的模型，不代表 Provider 已实时确认模型
+在线。真实可用性仍以聊天请求的 Provider 响应为准。
 
-永久保存所有 user/assistant 原文。复合主键为：
+### 懒加载和缓存
 
-```text
-(session_id, round_no, role)
-```
+服务启动时不会批量创建所有模型。用户第一次选择某个 model ID 时才会：
 
-摘要压缩不会删除全量聊天记录。
+1. 校验模型属于当前可调用目录；
+2. 创建对应的 `ChatOpenAI` 实例；
+3. 创建对应的 LangChain Agent graph；
+4. 将模型实例和 graph 缓存在当前进程。
 
-#### `conversation_summaries`
+后续再次选择相同 model ID 时直接复用缓存。切换模型不会创建新会话，也不会清空
+当前上下文。
 
-保存每一版累计摘要及对应原始轮次范围：
+## SQLite 持久化
 
-| 字段 | 说明 |
+数据库默认位于 `data/xiaoyuan.db`，启用外键和 WAL 模式。
+
+| 表 | 用途 |
 |---|---|
-| `session_id` | 所属会话 |
-| `content` | 摘要正文 |
-| `start_round` | 覆盖起始轮次 |
-| `end_round` | 覆盖结束轮次 |
-| `created_at` | 生成时间 |
+| `sessions` | 会话标题、轮次数、创建和更新时间 |
+| `conversation_rounds` | 每一轮的 `pending/completed/failed` 生命周期 |
+| `chat_messages` | 所有 user/assistant 原文 |
+| `conversation_summaries` | 累计摘要正文、覆盖范围和历史版本 |
 
-历史摘要版本会保留，例如：
+`chat_messages` 使用 `(session_id, round_no, role)` 作为复合主键。摘要只影响模型
+上下文的构建方式，不会删除或改写完整聊天记录。
 
-```text
-摘要 1：第 1–20 轮
-摘要 2：第 1–40 轮
-摘要 3：第 1–60 轮
-```
+## Web 页面
 
-### 30/20/10 滚动摘要
+`static/index.html` 是不依赖前端框架的单页聊天界面，包含：
 
-摘要尚未覆盖的原始记录达到 30 轮时，后台异步压缩最早 20 轮，保留最近
-10 轮原文作为活跃上下文。
+- 虚拟“新对话”入口；
+- 会话列表、轮数和当前会话状态；
+- 会话切换、重命名和删除确认弹窗；
+- 模型选择器及目录来源标识；
+- 当前 session 和模型的 `localStorage` 记忆；
+- 服务端完整聊天记录恢复。
 
-首次压缩：
+浏览器只保存当前 `sessionId` 和选中的 model ID，消息正文以 SQLite 为唯一来源。
 
-```text
-完整记录：第 1–30 轮
-摘要覆盖：第 1–20 轮
-活跃原文：第 21–30 轮
-```
-
-再次达到 30 轮未压缩上下文时：
-
-```text
-旧摘要：第 1–20 轮
-新增压缩：第 21–40 轮
-新摘要：第 1–40 轮
-活跃原文：第 41–50 轮
-```
-
-### 异步压缩期间不丢上下文
-
-摘要任务不会阻塞用户继续发送消息。每次模型调用都会先读取最新摘要的
-`end_round`，再从全量消息表读取该轮次之后的所有记录：
-
-```text
-模型上下文
-  = 最新摘要
-  + round_no > summary.end_round 的全部原始记录
-  + 当前 Query
-```
-
-例如摘要仍只覆盖第 1–20 轮，而用户已经发送到第 35 轮，模型会收到：
-
-```text
-第 1–20 轮摘要 + 第 21–34 轮原文 + 第 35 轮当前 Query
-```
-
-因此压缩变慢只会临时增加上下文长度，不会遗漏消息。每个 session 同时最多
-运行一个压缩任务；任务结束后如果仍积压 30 轮，会自动继续追赶。
-
-### Agent 临时 State
-
-SQLite 是持久化事实来源，每次请求临时重建消息列表：
-
-```python
-{
-    "messages": [
-        HumanMessage("历史摘要；用户层上下文"),  # 有摘要时
-        # 摘要范围之后的原始 HumanMessage / AIMessage
-        HumanMessage("当前 Query"),
-    ],
-}
-```
-
-System Prompt 由 Agent 配置单独提供，不属于上述可变消息列表。当前 Query 已经
-先写入 SQLite，但构建模型输入时只添加一次，不会因持久化而重复。
-
-`sessionId` 属于运行边界和数据库主键，不作为模型可生成的业务状态。
-
-### 待实现方案：Token 硬上限
-
-当前 `30/20/10` 仍是轮次策略，尚未实现 Token 计数和硬上限。计划保留轮次
-规则，同时增加两级 Token 保护：
-
-```text
-可用历史预算
-  = 模型上下文上限
-  - 最大输出预留
-  - 固定 System Prompt
-  - 未来 Tool/Skill 预留
-  - 安全余量
-
-达到软阈值：提前提交异步摘要
-达到硬阈值：当前请求不能继续等待后台任务，执行同步应急压缩
-```
-
-触发条件计划调整为：
-
-```python
-should_compress = (
-    uncovered_rounds >= 30
-    or uncovered_tokens >= soft_token_limit
-)
-```
-
-具体 Token 阈值需要根据实际模型窗口、真实对话 P90/P95 长度、最大回复长度和
-未来 Tool 返回量通过评测确定，本版本不写死。
-
-### 待实现方案：摘要版本与生成信息
-
-本版本仍只持久化摘要正文、覆盖轮次和创建时间。计划为每版摘要补充：
-
-| 字段 | 用途 |
-|---|---|
-| `prompt_version` | 标识使用的摘要 Prompt 版本 |
-| `model_name` | 标识生成摘要的模型 |
-| `source_hash` | 校验摘要对应的原始范围 |
-| `input_tokens` | 记录摘要输入成本 |
-| `output_tokens` | 记录摘要输出成本 |
-| `status` | 记录生成状态 |
-| `error` | 记录失败原因 |
-
-这些字段用于评测、审计和重新生成摘要，当前只保留方案，尚未修改数据库结构。
-
-### API
+## API
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `POST` | `/api/chat` | 发送消息；首次不传 `sessionId` |
-| `GET` | `/api/sessions` | 获取全部真实会话 |
-| `GET` | `/api/sessions/{sessionId}` | 获取会话、全量消息和摘要状态 |
+| `GET` | `/api/models` | 获取当前配置下的模型目录 |
+| `GET` | `/api/models?refresh=true` | 强制刷新 Coding Plan 模型目录 |
+| `POST` | `/api/chat` | 发送消息并选择模型 |
+| `GET` | `/api/sessions` | 获取真实会话列表 |
+| `GET` | `/api/sessions/{sessionId}` | 获取会话消息、摘要和压缩状态 |
 | `PATCH` | `/api/sessions/{sessionId}` | 重命名会话 |
-| `DELETE` | `/api/sessions/{sessionId}` | 删除会话 |
+| `DELETE` | `/api/sessions/{sessionId}` | 删除会话及关联数据 |
 
-首次发送示例：
+首次发送：
 
 ```json
 {
-  "message": "帮我整理今天的会议纪要"
+  "message": "帮我整理今天的会议纪要",
+  "model": "qwen3d6-27b"
 }
 ```
 
-继续对话：
+继续已有会话：
 
 ```json
 {
   "message": "再精简一点",
-  "sessionId": "服务返回的会话 ID"
+  "sessionId": "服务返回的会话 ID",
+  "model": "qwen3-coder-plus"
 }
 ```
 
-### 项目结构
+一次成功响应包含：
+
+```json
+{
+  "reply": "模型回复",
+  "sessionId": "会话 ID",
+  "round": 1,
+  "title": "自动或手动会话标题",
+  "model": "实际使用的 model ID"
+}
+```
+
+## 项目结构
 
 ```text
 .
-├── agent.py               # Agent、上下文重建和异步摘要
-├── conversation_store.py  # SQLite 会话、消息和摘要存储
-├── config.py              # 模型配置
-├── server.py              # FastAPI 与会话接口
-├── static/index.html      # 多会话聊天页面
-├── tests/test_agent.py    # 持久化、隔离和压缩测试
-├── requirements.txt
-└── .env.example
+├── agent.py                 # Agent 运行时、上下文重建、模型 graph 缓存、异步摘要
+├── config.py                # Provider 配置、模型发现、目录状态和模型创建
+├── conversation_store.py    # SQLite schema、会话、轮次、消息和摘要持久化
+├── server.py                # FastAPI 页面与 JSON API
+├── static/
+│   └── index.html           # 原生 Web 聊天界面
+├── tests/
+│   ├── test_agent.py        # 会话、上下文、失败恢复、摘要和懒加载测试
+│   └── test_config.py       # Provider、模型目录和模型选择测试
+├── .env.example             # Provider 配置示例
+├── requirements.txt         # Python 依赖
+└── README.md
 ```
 
-### 测试
+## 测试
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-测试覆盖：
+当前测试覆盖：
 
-- 首次发送创建会话；
-- 会话隔离、删除和重命名；
-- SQLite 重启恢复；
-- 用户消息先落库以及失败轮次保留；
+- 首次发送后才创建会话；
+- 会话隔离、重命名和删除；
+- SQLite 重启恢复全量记录；
+- 用户消息先落库及失败轮次保留；
 - 摘要保持用户消息权限，不进入 System Prompt；
-- 第一次与第二次滚动压缩；
-- 摘要任务阻塞时继续对话不丢上下文；
-- 全量记录在压缩后仍完整保留。
+- 第一次和后续累计滚动摘要；
+- 摘要任务阻塞时继续聊天不丢上下文；
+- 模型切换及未知模型拒绝；
+- Provider 未配置时不出现在目录；
+- 模型实例和 Agent graph 按需加载并复用。
+
+## 当前边界
+
+当前版本仍有以下明确边界：
+
+- `tools=[]`，尚无业务 Tool、Skill Registry 或执行审批；
+- 30/20/10 是轮次策略，尚未实现 Token 软阈值和硬上限；
+- 摘要尚未记录 prompt 版本、模型、source hash 和 token 用量；
+- session 串行锁只在单个 Python 进程内有效；
+- 默认面向本地使用，尚未实现用户认证、租户隔离和限流；
+- 模型回复为普通请求，尚未实现流式输出。
+
+这些能力应在进入多人或多进程生产部署前补齐。
 
 ## 版本
 
-当前版本：**1.1 多轮次对话**
+当前版本：**1.2 多模型目录、模型切换与懒加载**

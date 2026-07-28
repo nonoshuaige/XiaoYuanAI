@@ -177,6 +177,65 @@ class AgentRuntimeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             runtime.chat("valid", "   ")
 
+    def test_selects_requested_model_and_rejects_unknown_model(self):
+        default_model = FakeListChatModel(responses=["默认模型回复"])
+        alternate_model = FakeListChatModel(responses=["第二模型回复"])
+        runtime = AgentRuntime(
+            default_model,
+            store=self.store,
+            models={
+                "qwen-coder": default_model,
+                "qwen3d6-27b": alternate_model,
+            },
+            default_model_id="qwen-coder",
+        )
+        self.runtimes.append(runtime)
+
+        first = runtime.chat("models", "使用默认模型")
+        second = runtime.chat("models", "切换模型", "qwen3d6-27b")
+
+        self.assertEqual(first.reply, "默认模型回复")
+        self.assertEqual(second.reply, "第二模型回复")
+        with self.assertRaisesRegex(ValueError, "不支持的模型"):
+            runtime.chat("models", "未知模型", "not-configured")
+        self.assertEqual(self.store.latest_round("models"), 2)
+
+    def test_lazily_loads_and_caches_each_selected_model(self):
+        available_models = {
+            "default-model": FakeListChatModel(
+                responses=["默认回复一", "默认回复二"]
+            ),
+            "alternate-model": FakeListChatModel(responses=["备选回复"]),
+        }
+        factory_calls = []
+
+        def model_factory(model_id):
+            factory_calls.append(model_id)
+            return available_models[model_id]
+
+        runtime = AgentRuntime(
+            store=self.store,
+            model_factory=model_factory,
+            default_model_id="default-model",
+        )
+        self.runtimes.append(runtime)
+
+        self.assertEqual(factory_calls, [])
+        self.assertEqual(runtime.graphs, {})
+
+        runtime.chat("lazy-models", "第一轮")
+        runtime.chat("lazy-models", "第二轮")
+        runtime.chat("lazy-models", "第三轮", "alternate-model")
+
+        self.assertEqual(
+            factory_calls,
+            ["default-model", "alternate-model"],
+        )
+        self.assertEqual(
+            set(runtime.graphs),
+            {"default-model", "alternate-model"},
+        )
+
     def test_user_message_is_persisted_before_model_call_and_kept_on_failure(self):
         model = FailingAfterPersistenceModel(self.store, "failed-turn")
         runtime = self.make_runtime(model)

@@ -7,7 +7,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from langchain.agents import create_agent
 from langchain_core.messages import (
@@ -17,7 +17,7 @@ from langchain_core.messages import (
     SystemMessage,
 )
 
-from config import get_llm
+from config import get_default_model_id, get_llm
 from conversation_store import (
     ConversationStore,
     ConversationSummary,
@@ -60,6 +60,7 @@ class AgentResponse:
     reply: str
     session_id: str
     round_no: int
+    model_id: str
 
 
 class AsyncSummaryManager:
@@ -210,31 +211,51 @@ class AgentRuntime:
 
     def __init__(
         self,
-        model: Any,
+        model: Any | None = None,
         *,
         store: ConversationStore = conversation_store,
         summary_model: Any | None = None,
         summary_manager: AsyncSummaryManager | None = None,
+        models: dict[str, Any] | None = None,
+        model_factory: Callable[[str], Any] | None = None,
+        default_model_id: str = "default",
     ):
         self.store = store
-        self.graph = create_agent(
-            model=model,
-            tools=[],
-            system_prompt=SYSTEM_PROMPT,
-            name="xiaoyuan",
-        )
+        self.default_model_id = default_model_id
+        self._models = dict(models or {})
+        if model is not None:
+            self._models.setdefault(default_model_id, model)
+        self._model_factory = model_factory
+        if default_model_id not in self._models and model_factory is None:
+            raise ValueError(f"默认模型未配置：{default_model_id}")
+        self.graphs: dict[str, Any] = {}
+        self._model_cache_lock = threading.RLock()
         self.summary_manager = summary_manager or AsyncSummaryManager(
             store,
-            summary_model or model,
+            summary_model
+            or model
+            or _LazyDefaultModel(self),
         )
         self._session_locks: dict[str, threading.Lock] = {}
         self._session_locks_guard = threading.Lock()
 
-    def chat(self, session_id: str, user_message: str) -> AgentResponse:
+    @property
+    def graph(self) -> Any:
+        """Preserve access to the default graph while keeping it lazy."""
+        return self._get_graph(self.default_model_id)
+
+    def chat(
+        self,
+        session_id: str,
+        user_message: str,
+        model_id: str | None = None,
+    ) -> AgentResponse:
         session_id = self.store.validate_session_id(session_id)
         message = user_message.strip()
         if not message:
             raise ValueError("消息不能为空")
+        selected_model_id = model_id or self.default_model_id
+        graph = self._get_graph(selected_model_id)
 
         # Serialize model turns within one session. Compression remains asynchronous
         # and never holds this lock.
@@ -250,7 +271,7 @@ class AgentRuntime:
                     model_messages.append(_summary_context_message(summary.content))
                 model_messages.extend(_to_langchain_messages(uncovered_messages))
                 model_messages.append(HumanMessage(content=message))
-                result = self.graph.invoke({"messages": model_messages})
+                result = graph.invoke({"messages": model_messages})
                 reply = _last_reply(result["messages"])
                 self.store.complete_round(session_id, round_no, reply)
             except Exception as exc:
@@ -271,6 +292,7 @@ class AgentRuntime:
             reply=reply,
             session_id=session_id,
             round_no=round_no,
+            model_id=selected_model_id,
         )
 
     def _load_model_context(
@@ -323,6 +345,43 @@ class AgentRuntime:
         with self._session_locks_guard:
             return self._session_locks.setdefault(session_id, threading.Lock())
 
+    def _get_model(self, model_id: str) -> Any:
+        """Create one selected model at first use and reuse it afterwards."""
+        with self._model_cache_lock:
+            cached = self._models.get(model_id)
+            if cached is not None:
+                return cached
+            if self._model_factory is None:
+                raise ValueError(f"不支持的模型：{model_id}")
+            loaded = self._model_factory(model_id)
+            self._models[model_id] = loaded
+            return loaded
+
+    def _get_graph(self, model_id: str) -> Any:
+        """Create and cache the LangChain graph together with its model."""
+        with self._model_cache_lock:
+            graph = self.graphs.get(model_id)
+            if graph is not None:
+                return graph
+            graph = create_agent(
+                model=self._get_model(model_id),
+                tools=[],
+                system_prompt=SYSTEM_PROMPT,
+                name=f"xiaoyuan-{model_id}",
+            )
+            self.graphs[model_id] = graph
+            return graph
+
+
+class _LazyDefaultModel:
+    """Resolve the summary model only when the first summary is generated."""
+
+    def __init__(self, runtime: AgentRuntime):
+        self.runtime = runtime
+
+    def invoke(self, messages: list[BaseMessage]) -> Any:
+        return self.runtime._get_model(self.runtime.default_model_id).invoke(messages)
+
 
 _default_runtime: AgentRuntime | None = None
 _runtime_lock = threading.Lock()
@@ -334,8 +393,11 @@ def get_runtime() -> AgentRuntime:
     if _default_runtime is None:
         with _runtime_lock:
             if _default_runtime is None:
-                model = get_llm()
-                _default_runtime = AgentRuntime(model)
+                default_model_id = get_default_model_id()
+                _default_runtime = AgentRuntime(
+                    model_factory=get_llm,
+                    default_model_id=default_model_id,
+                )
     return _default_runtime
 
 
