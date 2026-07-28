@@ -5,14 +5,15 @@
 按需加载的模型运行时。模型调用同时保留 Provider 原始响应与 LangChain 转换后的
 `AIMessage`，用于本地开发和问题调试。
 
-当前版本不加载业务 Tool 和 Skill，适合作为后续扩展工具调用、任务状态和能力路由
-的基础工程。
+当前版本已加载首个业务 Tool“找人”，可按自然语言中的工号、手机号或姓名查询内部
+员工通讯录。
 
 ## 项目能力
 
 | 模块 | 当前能力 |
 |---|---|
-| Agent 运行时 | LangChain `create_agent`，固定 System Prompt，无工具执行 |
+| Agent 运行时 | LangChain `create_agent`，固定 System Prompt，支持“找人”工具 |
+| 找人工具 | 工号 > 手机号 > 姓名优先级查询，部门辅助过滤，重名候选消歧 |
 | 上下文管理 | 固定系统规则 + 用户层历史摘要 + 未覆盖原文 + 当前问题 |
 | 长对话压缩 | 30/20/10 滚动摘要，后台异步生成，保留全量原文 |
 | 会话管理 | 新建、切换、自动命名、重命名、删除、多会话隔离 |
@@ -91,22 +92,23 @@ AgentRuntime
   ├── 按 session 串行执行对话轮次
   ├── 从 SQLite 重建模型上下文
   ├── 记录 Provider 响应与 LangChain 转换结果，供调试对照
+  ├── 按需调用“找人”工具
   └── 提交异步摘要任务
         │
         ├── OpenAI 兼容模型服务
-        └── SQLite 全量会话存储
+        └── SQLite 会话与员工通讯录存储
 ```
 
 ## Agent 运行时
 
-主链位于 `agent.py`，当前使用一个无工具 Agent：
+主链位于 `agent.py`，生产 Agent 注册了“找人”工具：
 
 ```text
 收到用户问题
   → 用户消息落库，轮次标记为 pending
   → 从 SQLite 读取最新摘要和未覆盖原文
   → 构建本次临时消息 State
-  → 调用选中的模型
+  → 调用选中的模型，按需执行工具
   → 保存 Provider 响应、完整 AIMessage 和 assistant 回复
   → 轮次标记为 completed
   → 必要时提交后台摘要任务
@@ -121,6 +123,68 @@ AgentRuntime
 - 不伪造 assistant 回复。
 
 同一进程内，同一 session 的模型请求通过独立锁串行执行；不同 session 可以并行。
+
+## 找人工具
+
+工具 API 名为 `find_person`，中文能力名为“找人”。员工目录保存在现有 SQLite
+数据库的 `people` 表中：
+
+| 字段 | SQLite 列 | 约束 |
+|---|---|---|
+| 工号 | `employee_id` | 主键 |
+| 姓名 | `name` | 必填，可重名 |
+| 手机号 | `phone` | 必填、唯一 |
+| 部门 | `department` | 必填 |
+
+用户至少需要明确提供工号、手机号或姓名中的一项。若同时提供多项，查询只选择最高
+优先级的字段：`工号 > 手机号 > 姓名`；部门可附加为精确过滤条件。工号、手机号、
+姓名均为精确匹配。姓名查询得到多人时，工具返回候选而不是擅自选择。
+
+生产 Agent 首次初始化时会自动建表，但不会写入虚构员工。同步员工数据时可调用
+`PeopleStore.upsert(...)`；之后 Agent 即可查询同一数据库中的记录。
+
+### 虚构员工沙箱
+
+仓库提供独立的 `data/sandbox.db` 沙箱，不会污染默认的
+`data/xiaoyuan.db`。运行以下命令会幂等写入 10 条虚构员工记录并启动网页服务：
+
+```bash
+/Users/zypro/Desktop/pythonenv/envs/XiaoYuan/bin/python sandbox.py
+```
+
+浏览器访问 <http://127.0.0.1:8000>。只初始化和验证数据、不启动服务：
+
+```bash
+/Users/zypro/Desktop/pythonenv/envs/XiaoYuan/bin/python sandbox.py --seed-only
+```
+
+可用示例问题：
+
+- `帮我找工号 XY-S003`
+- `手机号 13800000004 是谁？`
+- `帮我找研发部的陈晨`
+- `帮我找张三`（会返回研发部和财务部两位候选）
+- `找工号 XY-S003、手机号 13800000001、姓名张三`（按工号优先）
+
+沙箱仍会使用 `.env` 中配置的模型服务；仅 SQLite 数据与默认环境隔离。可通过
+`XIAOYUAN_DB_PATH` 为普通启动指定其他数据库。
+
+启动后可从聊天页侧栏进入“员工沙箱”，或直接访问
+<http://127.0.0.1:8000/employee-sandbox>。页面支持查看、搜索、新增、编辑和删除，
+每次操作都会立即写入当前沙箱 SQLite 数据库。沙箱仅在数据库文件首次创建时写入
+初始虚构数据，因此页面修改和删除（包括删除全部员工）在服务重启后仍会保留。
+
+员工沙箱 API：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/api/sandbox/status` | 检查当前服务是否为沙箱模式 |
+| `GET` | `/api/sandbox/people` | 获取员工列表，支持 `search` 查询 |
+| `POST` | `/api/sandbox/people` | 新增员工 |
+| `PUT` | `/api/sandbox/people/{employeeId}` | 更新员工全部字段 |
+| `DELETE` | `/api/sandbox/people/{employeeId}` | 删除员工 |
+
+上述页面与 API 只在通过 `sandbox.py` 启动时开放；普通生产启动返回 404。
 
 ## 上下文管理
 
@@ -374,10 +438,15 @@ ollama pull qwen3.5:9b
 ├── conversation_store.py    # SQLite schema、会话、轮次、消息和摘要持久化
 ├── model_audit.py           # Provider HTTP 捕获与 AIMessage 完整序列化
 ├── server.py                # FastAPI 页面与 JSON API
+├── sandbox.py               # 虚构员工数据与隔离沙箱启动入口
 ├── static/
-│   └── index.html           # 原生 Web 聊天界面
+│   ├── index.html           # 原生 Web 聊天界面
+│   └── employee-sandbox.html # 员工沙箱 CRUD 页面
 ├── tests/
 │   ├── test_agent.py        # 会话、上下文、失败恢复、摘要和懒加载测试
+│   ├── test_people_tool.py  # 找人优先级、消歧、校验和 Tool 输出测试
+│   ├── test_employee_sandbox_api.py # 员工沙箱页面与 CRUD API 测试
+│   ├── test_sandbox.py      # 虚构数据幂等写入与沙箱数据库隔离测试
 │   ├── test_config.py       # Provider、模型目录和模型选择测试
 │   └── test_model_audit.py  # Provider 原始响应与 AIMessage 序列化测试
 ├── .env.example             # Provider 配置示例
@@ -410,7 +479,7 @@ python -m unittest discover -s tests -v
 
 当前版本仍有以下明确边界：
 
-- `tools=[]`，尚无业务 Tool、Skill Registry 或执行审批；
+- 当前只有“找人”一个业务 Tool，尚无通用 Skill Registry 或执行审批；
 - 30/20/10 是轮次策略，尚未实现 Token 软阈值和硬上限；
 - 摘要尚未记录 prompt 版本、模型、source hash 和 token 用量；
 - session 串行锁只在单个 Python 进程内有效；
@@ -421,4 +490,4 @@ python -m unittest discover -s tests -v
 
 ## 版本
 
-当前版本：**1.3 Provider/AIMessage 调试记录与 Ollama 本地模型**
+当前版本：**1.4 找人工具与隔离沙箱**

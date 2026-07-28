@@ -2,21 +2,29 @@
 
 from __future__ import annotations
 
+import os
 import secrets
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from agent import get_context, get_runtime, reset_session
 from config import get_model_options
 from conversation_store import conversation_store
+from people_tool import (
+    DuplicatePersonError,
+    PeopleStore,
+    PersonNotFoundError,
+)
 
 
 app = FastAPI(title="小原 AI 助手")
+SANDBOX_MODE = os.getenv("XIAOYUAN_SANDBOX") == "1"
+people_store = PeopleStore()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -46,9 +54,87 @@ class RenameSessionRequest(BaseModel):
     title: str = Field(min_length=1, max_length=80)
 
 
+class EmployeeRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    employee_id: str = Field(min_length=1, max_length=32)
+    name: str = Field(min_length=1, max_length=50)
+    phone: str = Field(min_length=3, max_length=32)
+    department: str = Field(min_length=1, max_length=80)
+
+
+def _require_sandbox() -> None:
+    if not SANDBOX_MODE:
+        raise HTTPException(status_code=404, detail="sandbox not enabled")
+
+
 @app.get("/")
 async def index():
     return FileResponse("static/index.html")
+
+
+@app.get("/employee-sandbox")
+async def employee_sandbox_page():
+    _require_sandbox()
+    return FileResponse("static/employee-sandbox.html")
+
+
+@app.get("/api/sandbox/status")
+async def sandbox_status():
+    _require_sandbox()
+    return {"sandbox": True, "database": str(people_store.db_path)}
+
+
+@app.get("/api/sandbox/people")
+async def list_sandbox_people(
+    search: str | None = Query(default=None, max_length=100),
+):
+    _require_sandbox()
+    return await run_in_threadpool(people_store.list_all, search)
+
+
+@app.post("/api/sandbox/people", status_code=201)
+async def create_sandbox_person(request: EmployeeRequest):
+    _require_sandbox()
+    try:
+        return await run_in_threadpool(
+            people_store.create,
+            **request.model_dump(),
+        )
+    except DuplicatePersonError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.put("/api/sandbox/people/{employee_id}")
+async def update_sandbox_person(
+    employee_id: str,
+    request: EmployeeRequest,
+):
+    _require_sandbox()
+    try:
+        return await run_in_threadpool(
+            people_store.update,
+            employee_id,
+            **request.model_dump(),
+        )
+    except DuplicatePersonError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PersonNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete(
+    "/api/sandbox/people/{employee_id}",
+    status_code=204,
+    response_class=Response,
+)
+async def delete_sandbox_person(employee_id: str):
+    _require_sandbox()
+    try:
+        await run_in_threadpool(people_store.delete, employee_id)
+    except PersonNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Response(status_code=204)
 
 
 @app.get("/api/sessions")
