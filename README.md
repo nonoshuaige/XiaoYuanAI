@@ -12,7 +12,7 @@
 
 | 模块 | 当前能力 |
 |---|---|
-| Agent 运行时 | LangChain `create_agent`，固定 System Prompt，支持“找人”工具 |
+| Agent 运行时 | LangChain `create_agent`，结构化 System Prompt，支持“找人”工具 |
 | 找人工具 | 工号 > 手机号 > 姓名优先级查询，部门辅助过滤，重名候选消歧 |
 | 上下文管理 | 固定系统规则 + 用户层历史摘要 + 未覆盖原文 + 当前问题 |
 | 长对话压缩 | 30/20/10 滚动摘要，后台异步生成，保留全量原文 |
@@ -101,7 +101,8 @@ AgentRuntime
 
 ## Agent 运行时
 
-主链位于 `agent.py`，生产 Agent 注册了“找人”工具：
+主链位于 `agent.py`，System Prompt 及其动态构建逻辑位于 `prompts.py`，生产 Agent
+注册了“找人”工具：
 
 ```text
 收到用户问题
@@ -195,7 +196,7 @@ SQLite 是持久化事实来源。每次聊天请求都会重新构建临时消�
 
 ```text
 SystemMessage
-  固定办公助手规则
+  助手身份 + 通用能力 + 按实际注册生成的工具能力与调用规则
 
 HumanMessage（可选）
   历史对话摘要，明确标记为“用户层上下文”
@@ -209,8 +210,9 @@ HumanMessage
 
 ### 权限边界
 
-System Prompt 固定在代码中。历史摘要不会拼接进 System Prompt，也不能覆盖系统
-规则或成为外部操作授权。
+System Prompt 在代码中按实际注册的工具生成：通用语言与推理能力、已接入工具及其
+调用规则是相互独立的段落；未注册的工具不会出现在能力说明中。历史摘要不会拼接进
+System Prompt，也不能覆盖系统规则或成为外部操作授权。
 
 摘要模型使用独立的 `SUMMARY_SYSTEM_PROMPT` 生成压缩结果，但生成结果回到主 Agent
 时仍以 `HumanMessage` 注入。

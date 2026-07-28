@@ -14,6 +14,8 @@ from pydantic import PrivateAttr
 
 from agent import AgentRuntime
 from conversation_store import ConversationStore
+from people_tool import PeopleStore, create_find_person_tool
+from prompts import build_system_prompt
 
 
 class RecordingFakeChatModel(FakeListChatModel):
@@ -99,6 +101,29 @@ class AgentRuntimeTests(unittest.TestCase):
         )
         self.runtimes.append(runtime)
         return runtime
+
+    def test_system_prompt_separates_general_and_tool_capabilities(self):
+        prompt = build_system_prompt([])
+
+        self.assertIn("通用能力（模型直接完成，不调用工具）", prompt)
+        self.assertIn("当前已接入工具", prompt)
+        self.assertIn("当前没有接入任何外部工具", prompt)
+        self.assertIn("这些是模型的通用语言与推理能力，不是工具", prompt)
+        self.assertNotIn("### 找人（`find_person`）", prompt)
+
+    def test_system_prompt_only_lists_tools_registered_for_runtime(self):
+        people_store = PeopleStore(Path(self.temp_dir.name) / "people.db")
+        prompt = build_system_prompt(
+            [create_find_person_tool(people_store)]
+        )
+
+        self.assertIn("### 找人（`find_person`）", prompt)
+        self.assertIn("员工通讯录查询工具，不是模型的通用知识", prompt)
+        self.assertNotIn("当前没有接入任何外部工具", prompt)
+        self.assertLess(
+            prompt.index("## 通用能力（模型直接完成，不调用工具）"),
+            prompt.index("# 当前已接入工具"),
+        )
 
     def test_full_transcript_persists_after_store_recreation(self):
         runtime = self.make_runtime(
