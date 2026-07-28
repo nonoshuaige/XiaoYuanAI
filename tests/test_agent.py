@@ -109,6 +109,8 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertIn("当前已接入工具", prompt)
         self.assertIn("当前没有接入任何外部工具", prompt)
         self.assertIn("这些是模型的通用语言与推理能力，不是工具", prompt)
+        self.assertIn("简要说明工具的使用方式和用户需要提供的信息", prompt)
+        self.assertIn("不展示工具名、参数结构、调用过程", prompt)
         self.assertNotIn("### 找人（`find_person`）", prompt)
 
     def test_system_prompt_only_lists_tools_registered_for_runtime(self):
