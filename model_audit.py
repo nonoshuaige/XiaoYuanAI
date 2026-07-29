@@ -50,12 +50,20 @@ def create_audited_http_client(
             return
 
         body_error: str | None = None
-        try:
-            response.read()
-            raw_body = response.text
-        except Exception as exc:  # pragma: no cover - defensive transport path
+        content_type = response.headers.get("content-type", "").lower()
+        if "text/event-stream" in content_type:
+            # Reading here would drain the provider stream before LangChain can
+            # deliver tokens. The completed LangChain AIMessage remains the
+            # authoritative body-level audit for streaming calls.
             raw_body = ""
-            body_error = f"{type(exc).__name__}: {exc}"
+            body_error = "streaming response body intentionally not buffered"
+        else:
+            try:
+                response.read()
+                raw_body = response.text
+            except Exception as exc:  # pragma: no cover - defensive transport path
+                raw_body = ""
+                body_error = f"{type(exc).__name__}: {exc}"
 
         parsed_body: Any = None
         if raw_body:

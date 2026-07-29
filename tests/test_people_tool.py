@@ -215,9 +215,12 @@ class PeopleStoreTests(unittest.TestCase):
                 AIMessage(content="找到了李四，他在研发部。"),
             ]
         )
+        conversation_store = ConversationStore(
+            Path(self.temp_dir.name) / "chat.db"
+        )
         runtime = AgentRuntime(
             model,
-            store=ConversationStore(Path(self.temp_dir.name) / "chat.db"),
+            store=conversation_store,
             tools=[create_find_person_tool(tracking_store)],
         )
         self.addCleanup(runtime.close)
@@ -229,6 +232,18 @@ class PeopleStoreTests(unittest.TestCase):
         self.assertEqual(
             tracking_store.find_calls[0]["employee_id"],
             "E003",
+        )
+        events = conversation_store.get_chat_events(
+            "find-person-session",
+            1,
+        )
+        self.assertEqual(
+            [
+                event["type"]
+                for event in events
+                if event["type"].startswith("tool_")
+            ],
+            ["tool_start", "tool_end"],
         )
 
 

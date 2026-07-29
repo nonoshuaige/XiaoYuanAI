@@ -36,6 +36,9 @@ const latestMessageRenderState = computed(() => {
     message.key,
     message.content,
     message.status,
+    message.activities
+      .map((activity) => `${activity.id}:${activity.status}:${activity.label}`)
+      .join('\u0000'),
     message.quickReplies.join('\u0000'),
     message.artifacts.map((artifact) => `${artifact.draftId}:${artifact.status}`).join('\u0000'),
   ].join('\u0001')
@@ -254,6 +257,21 @@ onMounted(() => void store.initialize())
         >
           <div class="message-bubble" :class="{ 'artifact-only': message.artifacts.length }">
             <template v-if="message.role === 'assistant'">
+              <div
+                v-if="message.activities.length"
+                class="agent-activities"
+                aria-label="Agent 执行进度"
+              >
+                <div
+                  v-for="activity in message.activities"
+                  :key="activity.id"
+                  class="agent-activity"
+                  :class="activity.status"
+                >
+                  <span class="agent-activity-mark" aria-hidden="true"></span>
+                  <span>{{ activity.label }}</span>
+                </div>
+              </div>
               <MarkdownContent
                 v-if="!message.artifacts.length && message.content.trim()"
                 :content="message.content"

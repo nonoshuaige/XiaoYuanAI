@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { contextMessages } from '@/stores/chat'
+import { appendVisibleStreamDelta, contextMessages } from '@/stores/chat'
 import type { SessionContext } from '@/types/api'
 
 function context(
@@ -51,8 +51,14 @@ describe('contextMessages', () => {
     expect(messages).toHaveLength(2)
     expect(messages[1]).toMatchObject({
       role: 'assistant',
-      content: '正在思考…',
+      content: '',
       status: 'pending',
+      activities: [
+        {
+          label: '正在连接实时进度',
+          status: 'running',
+        },
+      ],
     })
   })
 
@@ -64,6 +70,17 @@ describe('contextMessages', () => {
       role: 'assistant',
       content: '后台回复',
       status: 'completed',
+    })
+  })
+})
+
+describe('appendVisibleStreamDelta', () => {
+  it('stops before hidden quick-reply metadata split across chunks', () => {
+    const first = appendVisibleStreamDelta('请选择一个会议室。', '\n\n<!--')
+
+    expect(first).toEqual({
+      content: '请选择一个会议室。',
+      suppress: true,
     })
   })
 })

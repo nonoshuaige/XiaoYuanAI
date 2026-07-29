@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import secrets
+import time
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -368,9 +371,79 @@ async def chat_endpoint(request: ChatRequest):
             f"/api/sessions/{session_id}/rounds/"
             f"{round_no}/model-call"
         ),
+        "eventsUrl": (
+            f"/api/sessions/{session_id}/rounds/"
+            f"{round_no}/events"
+        ),
         "artifacts": [],
         "quickReplies": [],
     }
+
+
+@app.get("/api/sessions/{session_id}/rounds/{round_no}/events")
+async def stream_chat_events(
+    session_id: str,
+    round_no: int,
+    request: Request,
+    after: int = Query(default=0, ge=0),
+):
+    """Replay and follow one durable Agent turn as an SSE stream."""
+    try:
+        round_state = conversation_store.get_round(session_id, round_no)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if round_state is None:
+        raise HTTPException(status_code=404, detail="round not found")
+
+    header_cursor = request.headers.get("last-event-id", "").strip()
+    cursor = after
+    if header_cursor:
+        try:
+            cursor = max(cursor, int(header_cursor))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Last-Event-ID 必须是整数",
+            ) from exc
+
+    async def event_stream():
+        nonlocal cursor
+        last_heartbeat = time.monotonic()
+        while True:
+            if await request.is_disconnected():
+                return
+            events = await run_in_threadpool(
+                conversation_store.get_chat_events,
+                session_id,
+                round_no,
+                after_event_id=cursor,
+            )
+            if events:
+                for event in events:
+                    cursor = event["eventId"]
+                    yield (
+                        f"id: {cursor}\n"
+                        f"event: {event['type']}\n"
+                        f"data: {json.dumps(event['payload'], ensure_ascii=False)}\n\n"
+                    )
+                    if event["type"] in {"completed", "failed"}:
+                        return
+                last_heartbeat = time.monotonic()
+                continue
+            if time.monotonic() - last_heartbeat >= 10:
+                yield ": heartbeat\n\n"
+                last_heartbeat = time.monotonic()
+            await asyncio.sleep(0.25)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/sessions/{session_id}")

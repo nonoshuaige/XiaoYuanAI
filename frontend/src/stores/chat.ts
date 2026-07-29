@@ -17,11 +17,27 @@ const CHAT_POLL_INTERVAL_MS = 1_200
 export interface UiMessage extends ChatMessage {
   key: string
   artifacts: BookingDraft[]
+  activities: AgentActivity[]
   transient?: boolean
+}
+
+export interface AgentActivity {
+  id: string
+  name: string
+  label: string
+  status: 'running' | 'completed' | 'failed'
 }
 
 function createSessionId() {
   return crypto.randomUUID().replaceAll('-', '').slice(0, 16)
+}
+
+export function appendVisibleStreamDelta(content: string, delta: string) {
+  const nextContent = content + delta
+  const metadataStart = nextContent.indexOf('<!--')
+  return metadataStart >= 0
+    ? { content: nextContent.slice(0, metadataStart).trimEnd(), suppress: true }
+    : { content: nextContent, suppress: false }
 }
 
 export function contextMessages(context: SessionContext): UiMessage[] {
@@ -37,6 +53,7 @@ export function contextMessages(context: SessionContext): UiMessage[] {
       artifacts:
         message.role === 'assistant' ? (context.artifactsByRound[String(message.round)] ?? []) : [],
       quickReplies: message.quickReplies ?? [],
+      activities: [],
     }
     if (
       message.role !== 'user' ||
@@ -51,15 +68,23 @@ export function contextMessages(context: SessionContext): UiMessage[] {
         key: `${context.sessionId}-${message.round}-assistant`,
         round: message.round,
         role: 'assistant' as const,
-        content:
-          message.status === 'pending'
-            ? '正在思考…'
-            : `生成失败：${message.error || '模型请求失败'}`,
+        content: message.status === 'pending' ? '' : `生成失败：${message.error || '模型请求失败'}`,
         quickReplies: [],
         created_at: message.created_at,
         status: message.status,
         error: message.error,
         artifacts: [],
+        activities:
+          message.status === 'pending'
+            ? [
+                {
+                  id: 'agent-status',
+                  name: 'agent',
+                  label: '正在连接实时进度',
+                  status: 'running' as const,
+                },
+              ]
+            : [],
       },
     ]
   })
@@ -77,6 +102,9 @@ export const useChatStore = defineStore('chat', () => {
   const error = ref('')
   const sandboxEnabled = ref(false)
   let pollTimer: ReturnType<typeof setTimeout> | null = null
+  let eventSource: EventSource | null = null
+  let eventSourceKey = ''
+  let streamFallbackTimer: ReturnType<typeof setTimeout> | null = null
   let sessionLoadVersion = 0
 
   const selectedModel = computed(
@@ -125,6 +153,7 @@ export const useChatStore = defineStore('chat', () => {
 
   function newConversation() {
     if (sending.value) return
+    stopStreaming()
     stopPolling()
     sessionLoadVersion += 1
     currentSessionId.value = null
@@ -141,6 +170,179 @@ export const useChatStore = defineStore('chat', () => {
     if (pollTimer !== null) {
       clearTimeout(pollTimer)
       pollTimer = null
+    }
+  }
+
+  function stopStreaming() {
+    if (eventSource) {
+      eventSource.close()
+      eventSource = null
+    }
+    eventSourceKey = ''
+    if (streamFallbackTimer !== null) {
+      clearTimeout(streamFallbackTimer)
+      streamFallbackTimer = null
+    }
+  }
+
+  function eventPayload(event: Event): Record<string, unknown> {
+    try {
+      return JSON.parse((event as MessageEvent<string>).data) as Record<string, unknown>
+    } catch {
+      return {}
+    }
+  }
+
+  function pendingAssistant(sessionId: string, round: number) {
+    return messages.value.find(
+      (message) =>
+        message.key === `${sessionId}-${round}-assistant` &&
+        message.role === 'assistant' &&
+        message.status === 'pending',
+    )
+  }
+
+  function upsertActivity(message: UiMessage, activity: AgentActivity) {
+    const index = message.activities.findIndex((item) => item.id === activity.id)
+    if (index >= 0) message.activities[index] = activity
+    else message.activities.push(activity)
+  }
+
+  async function finishStream(sessionId: string) {
+    if (currentSessionId.value !== sessionId) return
+    try {
+      const context = await api.session(sessionId)
+      if (currentSessionId.value !== sessionId) return
+      applyContext(context)
+      await refreshSessions()
+    } catch (caught) {
+      if (currentSessionId.value === sessionId) {
+        error.value = caught instanceof Error ? caught.message : '刷新最终回复失败'
+      }
+    }
+  }
+
+  function startStreaming(sessionId: string, round: number, eventsUrl?: string) {
+    if (currentSessionId.value !== sessionId) return
+    const key = `${sessionId}:${round}`
+    if (eventSource && eventSourceKey === key) return
+    stopStreaming()
+    stopPolling()
+    const source = new EventSource(
+      eventsUrl ?? `/api/sessions/${encodeURIComponent(sessionId)}/rounds/${round}/events`,
+    )
+    eventSource = source
+    eventSourceKey = key
+    let suppressHiddenMetadata = false
+
+    source.addEventListener('reset', (event) => {
+      const message = pendingAssistant(sessionId, round)
+      if (!message) return
+      const payload = eventPayload(event)
+      message.content = ''
+      message.activities = []
+      suppressHiddenMetadata = false
+      const label = typeof payload.label === 'string' ? payload.label : ''
+      if (label) {
+        upsertActivity(message, {
+          id: 'agent-status',
+          name: 'agent',
+          label,
+          status: 'running',
+        })
+      }
+    })
+    source.addEventListener('status', (event) => {
+      const message = pendingAssistant(sessionId, round)
+      if (!message) return
+      const payload = eventPayload(event)
+      upsertActivity(message, {
+        id: 'agent-status',
+        name: 'agent',
+        label: typeof payload.label === 'string' ? payload.label : '正在处理',
+        status: 'running',
+      })
+    })
+    source.addEventListener('text_delta', (event) => {
+      const message = pendingAssistant(sessionId, round)
+      if (!message) return
+      const payload = eventPayload(event)
+      if (typeof payload.delta !== 'string' || suppressHiddenMetadata) return
+      message.activities = message.activities.filter((activity) => activity.id !== 'agent-status')
+      const visible = appendVisibleStreamDelta(message.content, payload.delta)
+      message.content = visible.content
+      suppressHiddenMetadata = visible.suppress
+    })
+    source.addEventListener('tool_start', (event) => {
+      const message = pendingAssistant(sessionId, round)
+      if (!message) return
+      const payload = eventPayload(event)
+      const callId = typeof payload.callId === 'string' ? payload.callId : crypto.randomUUID()
+      upsertActivity(message, {
+        id: callId,
+        name: typeof payload.name === 'string' ? payload.name : 'tool',
+        label: typeof payload.label === 'string' ? payload.label : '正在调用工具',
+        status: 'running',
+      })
+    })
+    source.addEventListener('tool_end', (event) => {
+      const message = pendingAssistant(sessionId, round)
+      if (!message) return
+      const payload = eventPayload(event)
+      const callId = typeof payload.callId === 'string' ? payload.callId : 'tool'
+      upsertActivity(message, {
+        id: callId,
+        name: typeof payload.name === 'string' ? payload.name : 'tool',
+        label: typeof payload.label === 'string' ? payload.label : '工具调用完成',
+        status: payload.status === 'failed' ? 'failed' : 'completed',
+      })
+    })
+    source.addEventListener('completed', (event) => {
+      const message = pendingAssistant(sessionId, round)
+      const payload = eventPayload(event)
+      if (message) {
+        message.content = typeof payload.content === 'string' ? payload.content : message.content
+        message.quickReplies = Array.isArray(payload.quickReplies)
+          ? payload.quickReplies.filter((item): item is string => typeof item === 'string')
+          : []
+        message.status = 'completed'
+        message.activities = []
+      }
+      if (eventSource === source) stopStreaming()
+      void finishStream(sessionId)
+    })
+    source.addEventListener('failed', (event) => {
+      const message = pendingAssistant(sessionId, round)
+      const payload = eventPayload(event)
+      if (message) {
+        message.content =
+          typeof payload.message === 'string' ? payload.message : '生成失败，请稍后重试'
+        message.status = 'failed'
+        message.activities = []
+      }
+      if (eventSource === source) stopStreaming()
+      void refreshSessions()
+    })
+    source.onopen = () => {
+      if (eventSource !== source) return
+      stopPolling()
+      if (streamFallbackTimer !== null) {
+        clearTimeout(streamFallbackTimer)
+        streamFallbackTimer = null
+      }
+    }
+    source.onerror = () => {
+      if (eventSource !== source || streamFallbackTimer !== null) return
+      streamFallbackTimer = setTimeout(() => {
+        streamFallbackTimer = null
+        if (
+          eventSource === source &&
+          source.readyState !== EventSource.OPEN &&
+          currentSessionId.value === sessionId
+        ) {
+          schedulePolling(sessionId)
+        }
+      }, 3_000)
     }
   }
 
@@ -164,8 +366,14 @@ export const useChatStore = defineStore('chat', () => {
         const context = await api.session(sessionId)
         if (currentSessionId.value !== sessionId) return
         applyContext(context)
-        if (!messages.value.some((message) => message.status === 'pending')) {
+        const pending = messages.value.find(
+          (message) => message.role === 'assistant' && message.status === 'pending',
+        )
+        if (!pending) {
+          stopStreaming()
           await refreshSessions()
+        } else if (!eventSource) {
+          startStreaming(sessionId, pending.round)
         }
       } catch (caught) {
         if (currentSessionId.value === sessionId) {
@@ -182,13 +390,17 @@ export const useChatStore = defineStore('chat', () => {
   async function loadSession(id: string) {
     if (sending.value) return
     const loadVersion = ++sessionLoadVersion
+    stopStreaming()
     stopPolling()
     currentSessionId.value = id
     localStorage.setItem(CURRENT_SESSION_KEY, id)
     const context = await api.session(id)
     if (loadVersion !== sessionLoadVersion || currentSessionId.value !== id) return
     applyContext(context)
-    schedulePolling(id)
+    const pending = messages.value.find(
+      (message) => message.role === 'assistant' && message.status === 'pending',
+    )
+    if (pending) startStreaming(id, pending.round)
   }
 
   async function send(content: string) {
@@ -209,6 +421,7 @@ export const useChatStore = defineStore('chat', () => {
       status: 'pending',
       error: null,
       artifacts: [],
+      activities: [],
       quickReplies: [],
       transient: true,
     })
@@ -216,11 +429,19 @@ export const useChatStore = defineStore('chat', () => {
       key: `optimistic-assistant-${optimisticRound}`,
       round: optimisticRound,
       role: 'assistant',
-      content: '正在思考…',
+      content: '',
       created_at: new Date().toISOString(),
       status: 'pending',
       error: null,
       artifacts: [],
+      activities: [
+        {
+          id: 'agent-status',
+          name: 'agent',
+          label: '正在提交请求',
+          status: 'running',
+        },
+      ],
       quickReplies: [],
       transient: true,
     }
@@ -238,9 +459,17 @@ export const useChatStore = defineStore('chat', () => {
       title.value = result.title
       pending.key = `${result.sessionId}-${result.round}-assistant`
       pending.round = result.round
-      pending.content = '正在思考…'
+      pending.content = ''
       pending.status = 'pending'
       pending.artifacts = []
+      pending.activities = [
+        {
+          id: 'agent-status',
+          name: 'agent',
+          label: '请求已进入后台队列',
+          status: 'running',
+        },
+      ]
       pending.quickReplies = []
       pending.transient = false
       const optimisticUser = messages.value.find(
@@ -253,19 +482,23 @@ export const useChatStore = defineStore('chat', () => {
         optimisticUser.transient = false
       }
       await refreshSessions()
-      schedulePolling(result.sessionId)
+      startStreaming(result.sessionId, result.round, result.eventsUrl)
     } catch (caught) {
       try {
         const context = await api.session(targetSessionId)
         if (currentSessionId.value === targetSessionId) {
           applyContext(context)
-          schedulePolling(targetSessionId)
+          const recovered = messages.value.find(
+            (message) => message.role === 'assistant' && message.status === 'pending',
+          )
+          if (recovered) startStreaming(targetSessionId, recovered.round)
         }
       } catch {
         const message = caught instanceof Error ? caught.message : '发送失败'
         pending.content = `出错了：${message}`
         pending.status = 'failed'
         pending.error = message
+        pending.activities = []
         pending.transient = false
       }
     } finally {

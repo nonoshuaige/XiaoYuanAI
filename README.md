@@ -20,7 +20,7 @@
 | 快捷回答 | 候选收敛为 2–4 个明确选项时，展示当前轮可直接发送的临时回答按钮 |
 | 长对话压缩 | 30/20/10 滚动摘要，后台异步生成，保留全量原文 |
 | 会话管理 | 新建、切换、自动命名、重命名、删除、多会话隔离 |
-| 消息可靠性 | 用户消息先落库，LLM 后台生成；离开页面或刷新后按 `pending/completed/failed` 状态恢复 |
+| 消息可靠性 | 用户消息先落库，LLM 后台生成；SSE 事件可回放，离开页面或刷新后继续恢复 |
 | 模型管理 | 展示已配置远程 Provider 和可用本地 Provider，支持目录发现与切换 |
 | 模型加载 | 按 model ID 首次使用时加载，模型实例与 Agent graph 进程内缓存 |
 | 本地模型 | 自动发现本机 Ollama 模型，通过 OpenAI 兼容接口调用 |
@@ -100,7 +100,8 @@ FastAPI API 与前端构建产物
   │
   ├── 模型目录与 Provider 配置
   ├── 会话增删改查
-  └── 聊天任务受理（202 Accepted）
+  ├── 聊天任务受理（202 Accepted）
+  └── 可重连的 Agent SSE 事件流
         │
         ▼
 SQLite pending 轮次 + 后台 ChatJobManager
@@ -131,15 +132,18 @@ AgentRuntime
   → 后台 ChatJobManager 领取任务
   → 从 SQLite 读取最新摘要和未覆盖原文
   → 构建本次临时消息 State
-  → 调用选中的模型，按需执行工具
+  → 流式调用选中的模型，按需执行工具
+  → 文本增量和工具生命周期事件先写 SQLite，再通过 SSE 推送
   → 保存 Provider 响应、完整 AIMessage 和 assistant 回复
   → 轮次标记为 completed
-  → 前端轮询会话并替换“正在思考…”占位
+  → 前端收到 completed 事件后用完整会话记录校准卡片和快捷回答
   → 必要时提交后台摘要任务
 ```
 
 用户切换会话、离开聊天页或刷新不会取消后台任务。前端重新进入会话时从 SQLite
-恢复 pending 占位并继续轮询；服务重启时会扫描持久化 pending 轮次并重新提交。
+恢复 pending 轮次，并重新连接该轮 SSE；服务端按事件 ID 重放尚未展示的状态、文本
+增量和工具调用进度。SSE 断流时浏览器会自动重连，并以会话轮询作为兜底。服务重启
+时会扫描持久化 pending 轮次并重新提交。
 同一会话在上一轮完成前拒绝重复发送，但不阻止用户切换到其他会话。
 
 模型调用失败时：
@@ -328,6 +332,11 @@ System Prompt，也不能覆盖系统规则或成为外部操作授权。
 
 删除会话时，SQLite 外键会级联删除轮次、聊天消息和全部摘要版本。
 
+每轮 Agent 事件保存在 `chat_events` 表，事件类型包括 `status`、`reset`、
+`text_delta`、`tool_start`、`tool_end`、`completed` 和 `failed`。文本直答会逐段
+显示；工具调用只展示面向用户的执行状态，不把原始参数暴露到页面。最终消息、卡片和
+快捷回答仍以 `chat_messages` 及业务表中的完成态为准。
+
 ## 模型调用调试记录
 
 这部分数据用于开发调试，不是额外发送给模型的上下文。它主要帮助定位：
@@ -342,7 +351,9 @@ System Prompt，也不能覆盖系统规则或成为外部操作授权。
 
 1. **Provider HTTP 响应**：Provider ID、请求方法和 URL、状态码、reason phrase、
    全部响应头（保留重复项）、Provider request ID、响应对象 ID、原始解码响应体和
-   JSON 解析结果。SDK 重试产生的多个 HTTP 响应会按发生顺序全部保留。
+   JSON 解析结果。SDK 重试产生的多个 HTTP 响应会按发生顺序全部保留。Provider
+   使用 `text/event-stream` 时不会在响应钩子中提前缓冲正文，以免阻断实时 token；
+   此时正文级审计以最终完整 `AIMessage` 为准。
 2. **LangChain 转换结果**：完整 `AIMessage.model_dump(mode="json")`，包括
    `content`、`additional_kwargs`、`response_metadata`、`usage_metadata`、
    `id`、tool calls 和 Provider 放入消息中的 reasoning 扩展字段。
@@ -484,6 +495,8 @@ ollama pull qwen3.5:9b
 - 按 Provider 分组的模型选择器；
 - 当前 session 和模型的 `localStorage` 记忆；
 - 服务端完整聊天记录恢复；
+- Agent 状态、工具调用进度和模型正文的 SSE 实时输出；
+- 刷新、切换会话和断线后的持久化事件重放；
 - Markdown 安全渲染；
 - 可编辑、可取消、可过期、需要人工确认的会议室预约卡片；
 - 候选收敛后的快捷回答按钮，点击后直接作为下一条用户消息发送。
@@ -515,6 +528,7 @@ npm run dev
 | `POST` | `/api/chat` | 持久化消息并提交后台模型任务，返回 `202 pending` |
 | `GET` | `/api/sessions` | 获取真实会话列表 |
 | `GET` | `/api/sessions/{sessionId}` | 获取会话消息、摘要和压缩状态 |
+| `GET` | `/api/sessions/{sessionId}/rounds/{round}/events` | 回放并持续推送该轮 Agent SSE 事件 |
 | `GET` | `/api/sessions/{sessionId}/model-calls` | 获取会话全部模型调用调试记录 |
 | `GET` | `/api/sessions/{sessionId}/rounds/{round}/model-call` | 获取指定轮完整模型调用调试记录 |
 | `PATCH` | `/api/sessions/{sessionId}` | 重命名会话 |
@@ -620,6 +634,7 @@ npm run build
 - 会话隔离、重命名和删除；
 - SQLite 重启恢复全量记录；
 - 用户消息先落库及失败轮次保留；
+- SSE 文本增量、工具生命周期、完成事件及持久化重放；
 - Provider 完整 HTTP 响应与 LangChain `AIMessage` 持久化；
 - 摘要保持用户消息权限，不进入 System Prompt；
 - 第一次和后续累计滚动摘要；
@@ -639,10 +654,10 @@ npm run build
 - 摘要尚未记录 prompt 版本、模型、source hash 和 token 用量；
 - session 串行锁只在单个 Python 进程内有效；
 - 默认面向本地使用，尚未实现用户认证、租户隔离和限流；
-- 模型回复为普通请求，尚未实现流式输出。
+- 后台任务当前使用进程内线程池；多实例生产部署仍需独立任务队列和跨进程领取租约。
 
 这些能力应在进入多人或多进程生产部署前补齐。
 
 ## 版本
 
-当前版本：**2.0 Vue 3 前端架构、统一设计系统与类型化 API**
+当前版本：**2.1 持久化后台 Agent 与可回放 SSE**

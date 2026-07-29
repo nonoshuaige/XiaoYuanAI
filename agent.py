@@ -10,8 +10,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable
+from uuid import UUID
 
 from langchain.agents import create_agent
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -56,6 +58,86 @@ class AgentResponse:
     model_id: str
     artifacts: tuple[dict[str, Any], ...] = ()
     quick_replies: tuple[str, ...] = ()
+
+
+_TOOL_ACTIVITY_LABELS = {
+    "findPerson": "正在查询员工信息",
+    "find_person": "正在查询员工信息",
+    "queryMeetingRooms": "正在查询可用会议室",
+    "bookMeetingRoom": "正在生成预约确认卡片",
+}
+
+
+def _tool_activity_label(name: str) -> str:
+    return _TOOL_ACTIVITY_LABELS.get(name, f"正在调用 {name}")
+
+
+def _tool_activity_done_label(name: str) -> str:
+    label = _tool_activity_label(name)
+    return label.removeprefix("正在") + "完成"
+
+
+class _ToolEventHandler(BaseCallbackHandler):
+    """Translate LangChain tool callbacks into durable user-facing events."""
+
+    def __init__(self, emit: Callable[[str, dict[str, Any]], None]):
+        self._emit = emit
+        self._tool_names: dict[UUID, str] = {}
+
+    def on_tool_start(
+        self,
+        serialized: dict[str, Any],
+        input_str: str,
+        *,
+        run_id: UUID,
+        **kwargs: Any,
+    ) -> None:
+        name = str((serialized or {}).get("name") or kwargs.get("name") or "tool")
+        self._tool_names[run_id] = name
+        self._emit(
+            "tool_start",
+            {
+                "callId": str(run_id),
+                "name": name,
+                "label": _tool_activity_label(name),
+            },
+        )
+
+    def on_tool_end(
+        self,
+        output: Any,
+        *,
+        run_id: UUID,
+        **kwargs: Any,
+    ) -> None:
+        name = self._tool_names.pop(run_id, "tool")
+        self._emit(
+            "tool_end",
+            {
+                "callId": str(run_id),
+                "name": name,
+                "label": _tool_activity_done_label(name),
+                "status": "completed",
+            },
+        )
+
+    def on_tool_error(
+        self,
+        error: BaseException,
+        *,
+        run_id: UUID,
+        **kwargs: Any,
+    ) -> None:
+        name = self._tool_names.pop(run_id, "tool")
+        self._emit(
+            "tool_end",
+            {
+                "callId": str(run_id),
+                "name": name,
+                "label": f"{_tool_activity_label(name)}失败",
+                "status": "failed",
+            },
+        )
 
 
 class AsyncSummaryManager:
@@ -372,7 +454,12 @@ class AgentRuntime:
                         round_no,
                     )
                     try:
-                        result = graph.invoke({"messages": model_messages})
+                        result = self._stream_graph(
+                            graph,
+                            model_messages,
+                            session_id=session_id,
+                            round_no=round_no,
+                        )
                     finally:
                         reset_booking_draft_context(draft_context_token)
                     ai_message = _last_ai_message(result["messages"])
@@ -400,8 +487,12 @@ class AgentRuntime:
                             round_no,
                         )
                         try:
-                            result = graph.invoke(
-                                {"messages": retry_messages}
+                            result = self._stream_graph(
+                                graph,
+                                retry_messages,
+                                session_id=session_id,
+                                round_no=round_no,
+                                status_label="正在重新校验并生成正确结果",
                             )
                         finally:
                             reset_booking_draft_context(draft_context_token)
@@ -475,6 +566,85 @@ class AgentRuntime:
             artifacts=tuple(artifacts),
             quick_replies=tuple(quick_replies),
         )
+
+    def _stream_graph(
+        self,
+        graph: Any,
+        messages: list[BaseMessage],
+        *,
+        session_id: str,
+        round_no: int,
+        status_label: str = "正在理解你的请求",
+    ) -> dict[str, Any]:
+        """Run a graph while persisting text deltas and tool lifecycle events."""
+
+        def emit(event_type: str, payload: dict[str, Any]) -> None:
+            self.store.append_chat_event(
+                session_id,
+                round_no,
+                event_type,
+                payload,
+            )
+
+        emit("reset", {"reason": "start"})
+        emit(
+            "status",
+            {
+                "phase": "running",
+                "label": status_label,
+            },
+        )
+        final_state: dict[str, Any] | None = None
+        handler = _ToolEventHandler(emit)
+        hidden_marker = "<!--"
+        pending_text = ""
+        suppress_hidden_metadata = False
+        for mode, data in graph.stream(
+            {"messages": messages},
+            config={"callbacks": [handler]},
+            stream_mode=["messages", "values"],
+        ):
+            if mode == "values":
+                final_state = data
+                continue
+            chunk, metadata = data
+            if metadata.get("langgraph_node") != "model":
+                continue
+            delta = _content_text(chunk.content)
+            if not delta or suppress_hidden_metadata:
+                continue
+            pending_text += delta
+            marker_index = pending_text.find(hidden_marker)
+            if marker_index >= 0:
+                visible = pending_text[:marker_index]
+                if visible:
+                    emit("text_delta", {"delta": visible})
+                pending_text = ""
+                suppress_hidden_metadata = True
+                continue
+            held_suffix_length = max(
+                (
+                    length
+                    for length in range(
+                        1,
+                        min(len(hidden_marker) - 1, len(pending_text)) + 1,
+                    )
+                    if hidden_marker.startswith(pending_text[-length:])
+                ),
+                default=0,
+            )
+            visible_end = len(pending_text) - held_suffix_length
+            if visible_end:
+                emit(
+                    "text_delta",
+                    {"delta": pending_text[:visible_end]},
+                )
+                pending_text = pending_text[visible_end:]
+        if pending_text and not suppress_hidden_metadata:
+            emit("text_delta", {"delta": pending_text})
+        if final_state is None:
+            raise RuntimeError("Agent没有返回最终状态")
+        return final_state
 
     def _load_model_context(
         self,

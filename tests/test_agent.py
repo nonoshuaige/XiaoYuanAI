@@ -50,6 +50,10 @@ class RecordingFakeChatModel(FakeListChatModel):
         self._recorded_calls.append(args[0])
         return super()._call(*args, **kwargs)
 
+    def _stream(self, *args, **kwargs):
+        self._recorded_calls.append(args[0])
+        yield from super()._stream(*args, **kwargs)
+
 
 class FakeSummaryModel:
     def __init__(self, responses):
@@ -101,6 +105,10 @@ class FailingAfterPersistenceModel(FakeListChatModel):
         )
         raise RuntimeError("模拟模型失败")
 
+    def _stream(self, *args, **kwargs):
+        self._call(*args, **kwargs)
+        yield  # pragma: no cover
+
 
 class BlockingChatModel(FakeListChatModel):
     _started: threading.Event = PrivateAttr(default_factory=threading.Event)
@@ -111,6 +119,12 @@ class BlockingChatModel(FakeListChatModel):
         if not self._release.wait(timeout=5):
             raise TimeoutError("test did not release chat model")
         return super()._call(*args, **kwargs)
+
+    def _stream(self, *args, **kwargs):
+        self._started.set()
+        if not self._release.wait(timeout=5):
+            raise TimeoutError("test did not release chat model")
+        yield from super()._stream(*args, **kwargs)
 
 
 class AgentRuntimeTests(unittest.TestCase):
@@ -330,6 +344,37 @@ class AgentRuntimeTests(unittest.TestCase):
             ["星河 802", "天际 801"],
         )
         self.assertNotIn("quick-replies", stored["content"])
+        streamed_text = "".join(
+            event["payload"]["delta"]
+            for event in self.store.get_chat_events("quick-replies", 1)
+            if event["type"] == "text_delta"
+        )
+        self.assertEqual(streamed_text, "请选择会议室。")
+        self.assertNotIn("<!--", streamed_text)
+
+    def test_model_text_is_persisted_as_replayable_stream_events(self):
+        runtime = self.make_runtime(
+            FakeListChatModel(responses=["流式回复"])
+        )
+
+        runtime.chat("stream-events", "请直接回答")
+        events = self.store.get_chat_events("stream-events", 1)
+
+        self.assertEqual(events[0]["type"], "status")
+        self.assertIn("reset", [event["type"] for event in events])
+        self.assertIn("completed", [event["type"] for event in events])
+        self.assertEqual(
+            "".join(
+                event["payload"]["delta"]
+                for event in events
+                if event["type"] == "text_delta"
+            ),
+            "流式回复",
+        )
+        completed = next(
+            event for event in events if event["type"] == "completed"
+        )
+        self.assertEqual(completed["payload"]["content"], "流式回复")
 
     def test_meeting_room_quick_replies_are_derived_from_real_tool_result(self):
         tool_result = {

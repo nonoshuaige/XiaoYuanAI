@@ -117,6 +117,7 @@ export interface ChatResponse {
   title: string
   model: string
   modelCallUrl: string
+  eventsUrl: string
   artifacts: BookingDraft[]
   quickReplies: string[]
 }

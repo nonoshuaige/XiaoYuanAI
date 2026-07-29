@@ -99,6 +99,21 @@ class ConversationStore:
                 CREATE INDEX IF NOT EXISTS idx_rounds_session_status
                 ON conversation_rounds(session_id, status, round_no);
 
+                CREATE TABLE IF NOT EXISTS chat_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    round_no INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (session_id, round_no)
+                        REFERENCES conversation_rounds(session_id, round_no)
+                        ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_chat_events_round
+                ON chat_events(session_id, round_no, event_id);
+
                 CREATE TABLE IF NOT EXISTS model_call_audits (
                     session_id TEXT NOT NULL,
                     round_no INTEGER NOT NULL,
@@ -300,6 +315,8 @@ class ConversationStore:
                 connection.execute("PRAGMA user_version = 5")
             if schema_version < 6:
                 connection.execute("PRAGMA user_version = 6")
+            if schema_version < 7:
+                connection.execute("PRAGMA user_version = 7")
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         session_id = self.validate_session_id(session_id)
@@ -426,6 +443,17 @@ class ConversationStore:
                 """,
                 (session_id, round_no, "user", user_content, now),
             )
+            self._append_chat_event(
+                connection,
+                session_id=session_id,
+                round_no=round_no,
+                event_type="status",
+                payload={
+                    "phase": "queued",
+                    "label": "请求已进入后台队列",
+                },
+                created_at=now,
+            )
             connection.execute(
                 """
                 UPDATE sessions
@@ -506,6 +534,17 @@ class ConversationStore:
                 """,
                 (now, session_id, round_no),
             )
+            self._append_chat_event(
+                connection,
+                session_id=session_id,
+                round_no=round_no,
+                event_type="completed",
+                payload={
+                    "content": assistant_content,
+                    "quickReplies": list(quick_replies),
+                },
+                created_at=now,
+            )
             if model_call is not None:
                 self._write_model_call(
                     connection,
@@ -553,6 +592,14 @@ class ConversationStore:
                 (error_text, now, session_id, round_no),
             )
             if cursor.rowcount:
+                self._append_chat_event(
+                    connection,
+                    session_id=session_id,
+                    round_no=round_no,
+                    event_type="failed",
+                    payload={"message": "生成失败，请稍后重试"},
+                    created_at=now,
+                )
                 if model_call is not None:
                     self._write_model_call(
                         connection,
@@ -572,6 +619,113 @@ class ConversationStore:
                     (now, session_id),
                 )
         return cursor.rowcount > 0
+
+    def append_chat_event(
+        self,
+        session_id: str,
+        round_no: int,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> int:
+        """Append one durable, replayable event for an active model turn."""
+        session_id = self.validate_session_id(session_id)
+        resolved_type = event_type.strip()
+        if not resolved_type or len(resolved_type) > 64:
+            raise ValueError("event_type 必须为 1 到 64 个字符")
+        now = datetime.now().isoformat()
+        with self._write_lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM conversation_rounds
+                WHERE session_id = ? AND round_no = ?
+                """,
+                (session_id, round_no),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("对话轮次不存在")
+            return self._append_chat_event(
+                connection,
+                session_id=session_id,
+                round_no=round_no,
+                event_type=resolved_type,
+                payload=payload or {},
+                created_at=now,
+            )
+
+    def get_chat_events(
+        self,
+        session_id: str,
+        round_no: int,
+        *,
+        after_event_id: int = 0,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Read ordered events after a cursor so SSE clients can reconnect."""
+        session_id = self.validate_session_id(session_id)
+        if round_no < 1:
+            raise ValueError("round_no 必须大于 0")
+        if after_event_id < 0:
+            raise ValueError("after_event_id 不能小于 0")
+        resolved_limit = max(1, min(limit, 1_000))
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT event_id, event_type, payload_json, created_at
+                FROM chat_events
+                WHERE
+                    session_id = ?
+                    AND round_no = ?
+                    AND event_id > ?
+                ORDER BY event_id
+                LIMIT ?
+                """,
+                (
+                    session_id,
+                    round_no,
+                    after_event_id,
+                    resolved_limit,
+                ),
+            ).fetchall()
+        return [
+            {
+                "eventId": int(row["event_id"]),
+                "type": row["event_type"],
+                "payload": json.loads(row["payload_json"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _append_chat_event(
+        connection: sqlite3.Connection,
+        *,
+        session_id: str,
+        round_no: int,
+        event_type: str,
+        payload: dict[str, Any],
+        created_at: str,
+    ) -> int:
+        cursor = connection.execute(
+            """
+            INSERT INTO chat_events(
+                session_id,
+                round_no,
+                event_type,
+                payload_json,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                round_no,
+                event_type,
+                json.dumps(payload, ensure_ascii=False),
+                created_at,
+            ),
+        )
+        return int(cursor.lastrowid)
 
     def get_model_calls(
         self,

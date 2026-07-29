@@ -130,6 +130,17 @@ class AsyncChatApiTests(unittest.TestCase):
                     ("assistant", "后台回复"),
                 ],
             )
+            events = self.client.get(
+                "/api/sessions/client-session/rounds/1/events"
+            )
+            self.assertEqual(events.status_code, 200)
+            self.assertEqual(
+                events.headers["content-type"],
+                "text/event-stream; charset=utf-8",
+            )
+            self.assertIn("event: status", events.text)
+            self.assertIn("event: completed", events.text)
+            self.assertIn('"content": "后台回复"', events.text)
 
 
 if __name__ == "__main__":
