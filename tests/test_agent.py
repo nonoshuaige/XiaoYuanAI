@@ -105,39 +105,31 @@ class AgentRuntimeTests(unittest.TestCase):
     def test_system_prompt_separates_general_and_tool_capabilities(self):
         prompt = build_system_prompt([])
 
-        self.assertIn("通用能力（模型直接完成，不调用工具）", prompt)
-        self.assertIn("当前已接入工具", prompt)
+        self.assertIn("不把这些通用能力描述成工具", prompt)
         self.assertIn("当前没有接入任何外部工具", prompt)
-        self.assertIn("这些是模型的通用语言与推理能力，不是工具", prompt)
-        self.assertIn("简要说明工具的使用方式和用户需要提供的信息", prompt)
-        self.assertIn("不展示工具名、参数结构、调用过程", prompt)
-        self.assertNotIn("### 找人（`find_person`）", prompt)
+        self.assertIn("不展示工具名、参数或调用过程", prompt)
 
-    def test_system_prompt_only_lists_tools_registered_for_runtime(self):
+    def test_system_prompt_does_not_duplicate_bound_tool_description(self):
         people_store = PeopleStore(Path(self.temp_dir.name) / "people.db")
-        prompt = build_system_prompt(
-            [create_find_person_tool(people_store)]
-        )
+        find_person = create_find_person_tool(people_store)
+        prompt = build_system_prompt([find_person])
 
-        self.assertIn("### 找人（`find_person`）", prompt)
-        self.assertIn("员工通讯录查询工具，不是模型的通用知识", prompt)
         self.assertNotIn("当前没有接入任何外部工具", prompt)
-        self.assertLess(
-            prompt.index("## 通用能力（模型直接完成，不调用工具）"),
-            prompt.index("# 当前已接入工具"),
-        )
+        self.assertNotIn(find_person.description, prompt)
+        self.assertIn("本轮实际提供的工具", prompt)
 
-    def test_find_person_prompt_requires_intent_and_identity_clue(self):
+    def test_system_prompt_handles_greetings_and_self_introductions(self):
         people_store = PeopleStore(Path(self.temp_dir.name) / "people.db")
         prompt = build_system_prompt(
             [create_find_person_tool(people_store)]
         )
 
-        self.assertIn("调用工具必须同时满足两个条件", prompt)
-        self.assertIn("明确提出找人、查人、确认人员或查询员工联系方式", prompt)
-        self.assertIn("尚未提供上述身份线索时，不要调用工具", prompt)
-        self.assertIn("自我介绍、寒暄、署名、写作或翻译内容", prompt)
-        self.assertIn("未调用工具时不得编造查询结果", prompt)
+        self.assertIn("仅作普通问候时自然回应", prompt)
+        self.assertIn("仅作自我介绍时友好回应", prompt)
+        self.assertIn("姓名只是对话内容，不代表查询请求", prompt)
+        self.assertIn("不要暗示已经查询或没有查询到该用户", prompt)
+        self.assertIn("若还包含明确任务，则继续完成该任务", prompt)
+        self.assertIn("只有工具实际返回结果", prompt)
 
     def test_full_transcript_persists_after_store_recreation(self):
         runtime = self.make_runtime(

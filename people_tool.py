@@ -26,19 +26,19 @@ class FindPersonInput(BaseModel):
 
     employee_id: str | None = Field(
         default=None,
-        description="用户明确提供的工号，例如 E1024；不要猜测或编造。",
+        description="用户提供的工号，例如 E1024；未提供时留空。",
     )
     phone: str | None = Field(
         default=None,
-        description="用户明确提供的手机号；不要猜测或编造。",
+        description="用户提供的手机号；未提供时留空。",
     )
     name: str | None = Field(
         default=None,
-        description="用户明确提供的姓名；不要猜测或编造。",
+        description="用户提供的姓名；未提供时留空。",
     )
     department: str | None = Field(
         default=None,
-        description="用户明确提供的部门，可用于缩小结果范围；不能单独用于找人。",
+        description="用户提供的辅助部门线索；未提供时留空。",
     )
 
     @model_validator(mode="after")
@@ -229,13 +229,14 @@ class PeopleStore:
         name: str | None = None,
         department: str | None = None,
     ) -> dict[str, Any]:
-        """Find employees using employee ID > phone > name precedence."""
+        """Find employees by priority and verify every additional clue."""
         clues = {
             "employee_id": _clean(employee_id),
             "phone": _clean(phone),
             "name": _clean(name),
         }
         department = _clean(department)
+        all_clues = {**clues, "department": department}
         selected_field = next(
             (field for field in ("employee_id", "phone", "name") if clues[field]),
             None,
@@ -244,45 +245,120 @@ class PeopleStore:
             return {
                 "status": "invalid_input",
                 "matched_by": None,
-                "ignored_fields": [],
+                "checked_fields": [],
+                "conflicting_fields": [],
                 "people": [],
                 "message": "请至少提供工号、手机号或姓名中的一项。",
             }
 
-        ignored_fields = [
-            field
-            for field in ("employee_id", "phone", "name")
-            if field != selected_field and clues[field]
-        ]
         sql = (
             "SELECT employee_id, name, phone, department "
             f"FROM people WHERE {selected_field} = ?"
         )
         parameters: list[str] = [clues[selected_field] or ""]
-        if department:
-            sql += " AND department = ?"
-            parameters.append(department)
         sql += " ORDER BY employee_id LIMIT 21"
 
         with self._connect() as connection:
             rows = connection.execute(sql, parameters).fetchall()
-        people = [dict(row) for row in rows]
-        if not people:
-            status = "not_found"
-            message = f"没有找到匹配的员工（按{_FIELD_LABELS[selected_field]}查询）。"
+            alternative_matched_fields = (
+                [
+                    field
+                    for field in ("employee_id", "phone", "name")
+                    if (
+                        field != selected_field
+                        and clues[field]
+                        and connection.execute(
+                            f"SELECT 1 FROM people WHERE {field} = ? LIMIT 1",
+                            (clues[field],),
+                        ).fetchone()
+                    )
+                ]
+                if not rows
+                else []
+            )
+        primary_matches = [dict(row) for row in rows]
+        additional_clues = {
+            field: value
+            for field, value in all_clues.items()
+            if field != selected_field and value
+        }
+        checked_fields = [
+            field
+            for field in ("employee_id", "phone", "name", "department")
+            if all_clues[field]
+        ]
+
+        if not primary_matches:
+            people: list[dict[str, str]] = []
+            if alternative_matched_fields:
+                status = "conflicting_clues"
+                conflicting_fields = [
+                    field
+                    for field in ("employee_id", "phone", "name")
+                    if clues[field]
+                ]
+                labels = "、".join(
+                    _FIELD_LABELS[field] for field in conflicting_fields
+                )
+                message = (
+                    f"提供的{labels}线索无法指向同一位员工。请核对后重试。"
+                )
+            else:
+                status = "not_found"
+                conflicting_fields = []
+                message = (
+                    f"没有找到匹配的员工"
+                    f"（按{_FIELD_LABELS[selected_field]}查询）。"
+                )
+        else:
+            people = [
+                person
+                for person in primary_matches
+                if all(
+                    person[field] == value
+                    for field, value in additional_clues.items()
+                )
+            ]
+            conflicting_fields = (
+                [
+                    field
+                    for field, value in additional_clues.items()
+                    if all(
+                        person[field] != value
+                        for person in primary_matches
+                    )
+                ]
+                if not people
+                else []
+            )
+
+        if primary_matches and not people:
+            status = "conflicting_clues"
+            labels = "、".join(
+                _FIELD_LABELS[field] for field in conflicting_fields
+            )
+            message = (
+                f"提供的线索不一致：按{_FIELD_LABELS[selected_field]}"
+                f"定位后，{labels or '其他线索'}与记录不符。请核对后重试。"
+            )
         elif len(people) == 1:
             status = "found"
-            message = f"已按{_FIELD_LABELS[selected_field]}找到 1 位员工。"
-        else:
+            message = (
+                f"已按{_FIELD_LABELS[selected_field]}查询并验证全部线索，"
+                "找到 1 位员工。"
+            )
+        elif len(people) > 1:
             status = "multiple_matches"
             message = (
-                f"按{_FIELD_LABELS[selected_field]}找到 {len(people)} 位员工，"
+                f"按{_FIELD_LABELS[selected_field]}查询并验证全部线索后，"
+                f"找到 {len(people)} 位员工，"
                 "需要结合部门或其他信息请用户确认。"
             )
         return {
             "status": status,
             "matched_by": selected_field,
-            "ignored_fields": ignored_fields,
+            "checked_fields": checked_fields,
+            "conflicting_fields": conflicting_fields,
             "people": people,
             "message": message,
         }
@@ -295,12 +371,11 @@ def create_find_person_tool(store: PeopleStore) -> BaseTool:
         "find_person",
         args_schema=FindPersonInput,
         description=(
-            "找人：仅当用户明确要求找人、查人、确认人员或查询员工联系方式，"
-            "并且已经提供工号、手机号、姓名中的至少一项时，才从员工通讯录查询。"
-            "用户有找人意图但没有上述线索时不要调用，应先询问；自我介绍、寒暄、"
-            "署名、写作或翻译内容、一般性提及姓名时不要调用。"
-            "同时提供多项时严格按工号 > 手机号 > 姓名的优先级查询。"
-            "部门只能作为可选的辅助过滤条件，不能单独用于找人。"
+            "查询员工通讯录。仅当用户明确要求找人、确认员工或查询联系方式，"
+            "并已提供工号、手机号或姓名之一时调用；满足条件就立即调用，"
+            "不要因为可能重名而提前追问。没有上述身份线索时先询问，不调用。"
+            "把用户明确提供的全部线索如实传入，不要猜测；工具会校验线索是否一致，"
+            "冲突时不得选择某个人。部门只能辅助查询，不能单独用于找人。"
         ),
     )
     def find_person(
@@ -348,4 +423,5 @@ _FIELD_LABELS = {
     "employee_id": "工号",
     "phone": "手机号",
     "name": "姓名",
+    "department": "部门",
 }

@@ -74,25 +74,55 @@ class PeopleStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "至少需要提供一个"):
             FindPersonInput(department="研发部")
 
-    def test_employee_id_has_priority_over_phone_and_name(self):
+    def test_conflicting_clues_do_not_return_a_person(self):
         result = self.store.find(
             employee_id="E001",
             phone="13800138003",
             name="李四",
         )
 
-        self.assertEqual(result["status"], "found")
+        self.assertEqual(result["status"], "conflicting_clues")
         self.assertEqual(result["matched_by"], "employee_id")
-        self.assertEqual(result["ignored_fields"], ["phone", "name"])
-        self.assertEqual(result["people"][0]["employee_id"], "E001")
+        self.assertEqual(result["checked_fields"], ["employee_id", "phone", "name"])
+        self.assertEqual(result["conflicting_fields"], ["phone", "name"])
+        self.assertEqual(result["people"], [])
 
-    def test_phone_has_priority_over_name(self):
+    def test_consistent_clues_return_the_verified_person(self):
+        result = self.store.find(
+            employee_id="E003",
+            phone="13800138003",
+            name="李四",
+            department="研发部",
+        )
+
+        self.assertEqual(result["status"], "found")
+        self.assertEqual(
+            result["checked_fields"],
+            ["employee_id", "phone", "name", "department"],
+        )
+        self.assertEqual(result["conflicting_fields"], [])
+        self.assertEqual(result["people"][0]["employee_id"], "E003")
+
+    def test_phone_is_primary_but_name_is_still_verified(self):
         result = self.store.find(phone="13800138003", name="张三")
 
-        self.assertEqual(result["status"], "found")
+        self.assertEqual(result["status"], "conflicting_clues")
         self.assertEqual(result["matched_by"], "phone")
-        self.assertEqual(result["ignored_fields"], ["name"])
-        self.assertEqual(result["people"][0]["name"], "李四")
+        self.assertEqual(result["conflicting_fields"], ["name"])
+        self.assertEqual(result["people"], [])
+
+    def test_missing_primary_clue_still_detects_secondary_conflict(self):
+        result = self.store.find(
+            employee_id="E999",
+            phone="13800138003",
+        )
+
+        self.assertEqual(result["status"], "conflicting_clues")
+        self.assertEqual(
+            result["conflicting_fields"],
+            ["employee_id", "phone"],
+        )
+        self.assertEqual(result["people"], [])
 
     def test_name_can_return_multiple_candidates(self):
         result = self.store.find(name="张三")
@@ -106,6 +136,13 @@ class PeopleStoreTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "found")
         self.assertEqual(result["people"][0]["employee_id"], "E002")
+
+    def test_conflicting_department_does_not_return_a_person(self):
+        result = self.store.find(employee_id="E003", department="财务部")
+
+        self.assertEqual(result["status"], "conflicting_clues")
+        self.assertEqual(result["conflicting_fields"], ["department"])
+        self.assertEqual(result["people"], [])
 
     def test_directory_crud_persists_and_enforces_uniqueness(self):
         created = self.store.create(
@@ -146,11 +183,11 @@ class PeopleStoreTests(unittest.TestCase):
         result = find_person.invoke({"employee_id": " E003 ", "name": "张三"})
 
         self.assertEqual(find_person.name, "find_person")
-        self.assertIn("仅当用户明确要求找人", find_person.description)
-        self.assertIn("没有上述线索时不要调用", find_person.description)
-        self.assertIn("自我介绍、寒暄", find_person.description)
-        self.assertEqual(result["matched_by"], "employee_id")
-        self.assertEqual(result["people"][0]["employee_id"], "E003")
+        self.assertIn("满足条件就立即调用", find_person.description)
+        self.assertIn("把用户明确提供的全部线索如实传入", find_person.description)
+        self.assertIn("工具会校验线索是否一致", find_person.description)
+        self.assertEqual(result["status"], "conflicting_clues")
+        self.assertEqual(result["people"], [])
 
     def test_agent_executes_find_person_tool_and_returns_final_reply(self):
         tracking_store = TrackingPeopleStore(
