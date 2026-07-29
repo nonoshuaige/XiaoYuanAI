@@ -87,6 +87,8 @@ class MeetingRoomToolTests(unittest.TestCase):
         self.assertIn("用户选择会议室只代表选中候选", skill.instructions)
         self.assertIn("不要求用户必须先提供楼层", skill.instructions)
         self.assertIn("suggestedTimeRanges", skill.instructions)
+        self.assertIn("预约人姓名+预约的会议", skill.instructions)
+        self.assertIn("将theme留空", skill.instructions)
         self.assertIn("confirmed才可设为true", skill.instructions)
         self.assertIn("重新查询会议室并检查冲突", skill.instructions)
 
@@ -200,6 +202,47 @@ class MeetingRoomToolTests(unittest.TestCase):
                     "confirmed": False,
                 }
             )
+
+    def test_server_generates_default_theme_from_trusted_booker(self):
+        created = self.store.create_booking(
+            room_id="room-711",
+            floor="7",
+            date="2026/07/29",
+            time_range="16:00-17:00",
+            booked_by=" 张三 ",
+        )
+
+        self.assertEqual(created["theme"], "张三预约的会议")
+        room = next(
+            room
+            for room in self.store.list_rooms(
+                room_query="711",
+                date="2026/07/29",
+            )["rooms"]
+            if room["roomId"] == "room-711"
+        )
+        self.assertEqual(room["occupied"][0]["theme"], "张三预约的会议")
+        self.assertEqual(room["occupied"][0]["bookedBy"], "张三")
+
+    def test_booking_tool_leaves_default_theme_to_server(self):
+        _, booking_tool = create_meeting_room_tools(
+            SandboxMeetingRoomClient(self.store)
+        )
+
+        result = json.loads(
+            booking_tool.invoke(
+                {
+                    "roomId": "room-711",
+                    "floor": "7",
+                    "date": "2026/07/29",
+                    "timeRange": "16:00-17:00",
+                    "confirmed": True,
+                }
+            )
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["theme"], "沙箱访客预约的会议")
 
     def test_store_rejects_overlap_but_allows_adjacent_booking(self):
         first = self.store.create_booking(

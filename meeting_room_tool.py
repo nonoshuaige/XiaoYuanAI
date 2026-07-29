@@ -459,7 +459,9 @@ class MeetingRoomStore:
             raise MeetingRoomError("会议室ID不能为空")
         if capacity < 1:
             raise MeetingRoomError("参会人数必须大于0")
-        normalized_theme = (theme or "未命名会议").strip() or "未命名会议"
+        normalized_booked_by = booked_by.strip() or "沙箱访客"
+        default_theme = f"{normalized_booked_by}预约的会议"
+        normalized_theme = (theme or "").strip() or default_theme
         created_at = self._now_factory().isoformat(timespec="seconds")
         booking_id = uuid.uuid4().hex
         meeting_id = (
@@ -525,7 +527,7 @@ class MeetingRoomStore:
                     end_time,
                     capacity,
                     normalized_theme,
-                    booked_by,
+                    normalized_booked_by,
                     created_at,
                 ),
             )
@@ -636,7 +638,12 @@ class BookMeetingRoomInput(BaseModel):
         description="参会人数，默认5",
         ge=1,
     )
-    theme: str | None = Field(default=None, description="会议主题")
+    theme: str | None = Field(
+        default=None,
+        description=(
+            "会议主题；不提供时由服务端按“预约人姓名+预约的会议”生成"
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_booking(self) -> "BookMeetingRoomInput":
