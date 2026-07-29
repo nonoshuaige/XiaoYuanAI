@@ -4,6 +4,7 @@ import {
   PhCalendarBlank as CalendarBlank,
   PhCheckCircle as CheckCircle,
   PhFloppyDisk as FloppyDisk,
+  PhXCircle as XCircle,
   PhWarningCircle as WarningCircle,
 } from '@phosphor-icons/vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
@@ -189,6 +190,23 @@ async function confirm() {
   }
 }
 
+async function cancel() {
+  feedbackError.value = false
+  feedback.value = '正在取消这张预约草稿…'
+  busy.value = true
+  try {
+    const cancelled = await api.cancelBookingDraft(current.value.draftId)
+    applyDraft(cancelled)
+    emit('updated', cancelled)
+    feedback.value = '预约草稿已取消，不会创建真实预约。'
+  } catch (error) {
+    feedbackError.value = true
+    feedback.value = error instanceof Error ? error.message : '取消失败，请稍后重试'
+  } finally {
+    busy.value = false
+  }
+}
+
 onMounted(() => {
   updateCountdown()
   timer = window.setInterval(updateCountdown, 1000)
@@ -308,6 +326,10 @@ onBeforeUnmount(() => {
       </p>
 
       <div v-if="!locked" class="booking-actions">
+        <button class="secondary-button" type="button" :disabled="busy" @click="cancel">
+          <XCircle :size="17" aria-hidden="true" />
+          取消草稿
+        </button>
         <button class="secondary-button" type="button" :disabled="busy" @click="save(false)">
           <FloppyDisk :size="17" aria-hidden="true" />
           保存修改

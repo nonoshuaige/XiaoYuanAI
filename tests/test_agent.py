@@ -242,6 +242,98 @@ class AgentRuntimeTests(unittest.TestCase):
             any("当前时间：00:00:02" in content for content in second_system)
         )
 
+    def test_runtime_injects_every_booking_draft_status(self):
+        meeting_store = MeetingRoomStore(
+            Path(self.temp_dir.name) / "draft-context.db",
+            now_factory=lambda: datetime.fromisoformat(
+                "2026-07-28T13:30:00+08:00"
+            ),
+        )
+        pending = meeting_store.create_draft(
+            room_id="room-711",
+            floor="7",
+            date="2026/07/29",
+            time_range="16:00-17:00",
+            session_id="draft-context",
+            round_no=1,
+        )
+        cancelled = meeting_store.create_draft(
+            room_id="room-708",
+            floor="7",
+            date="2026/07/29",
+            time_range="16:00-17:00",
+            session_id="draft-context",
+            round_no=2,
+        )
+        meeting_store.cancel_draft(cancelled["draftId"])
+        model = RecordingFakeChatModel(responses=["我已看到卡片状态"])
+        runtime = AgentRuntime(
+            model,
+            store=self.store,
+            booking_draft_store=meeting_store,
+        )
+        self.runtimes.append(runtime)
+
+        runtime.chat("draft-context", "现在是什么状态")
+
+        system_text = "\n".join(
+            message.content
+            for message in model.recorded_calls[0]
+            if isinstance(message, SystemMessage)
+        )
+        self.assertIn(pending["draftId"], system_text)
+        self.assertIn(cancelled["draftId"], system_text)
+        self.assertIn('"status":"pending"', system_text)
+        self.assertIn('"status":"cancelled"', system_text)
+        self.assertIn("模型没有权限操作卡片", system_text)
+
+    def test_quick_replies_are_parsed_persisted_and_not_shown_as_text(self):
+        runtime = self.make_runtime(
+            FakeListChatModel(
+                responses=[
+                    '请选择会议室。<!-- quick-replies: ["星河 802","天际 801"] -->'
+                ]
+            )
+        )
+
+        response = runtime.chat("quick-replies", "帮我选一个")
+        stored = self.store.get_messages("quick-replies")[-1]
+
+        self.assertEqual(response.reply, "请选择会议室。")
+        self.assertEqual(
+            response.quick_replies,
+            ("星河 802", "天际 801"),
+        )
+        self.assertEqual(
+            stored["quickReplies"],
+            ["星河 802", "天际 801"],
+        )
+        self.assertNotIn("quick-replies", stored["content"])
+
+    def test_text_only_booking_card_claim_is_retried(self):
+        model = RecordingFakeChatModel(
+            responses=[
+                "好的，已为您生成会议室预约草稿，请在下方确认。",
+                "预约卡片尚未生成，请重新选择会议室。",
+            ]
+        )
+        runtime = self.make_runtime(model)
+
+        response = runtime.chat("small-model-retry", "约星河802")
+
+        self.assertEqual(len(model.recorded_calls), 2)
+        self.assertEqual(
+            response.reply,
+            "预约卡片尚未生成，请重新选择会议室。",
+        )
+        retry_system = "\n".join(
+            message.content
+            for message in model.recorded_calls[1]
+            if isinstance(message, SystemMessage)
+        )
+        self.assertIn("输出校验失败", retry_system)
+        self.assertIn("严禁输出Markdown预约表格", retry_system)
+
     def test_full_transcript_persists_after_store_recreation(self):
         runtime = self.make_runtime(
             FakeListChatModel(responses=["你好，我是小原。", "第二轮回复"])

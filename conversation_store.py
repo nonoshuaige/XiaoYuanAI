@@ -113,6 +113,7 @@ class ConversationStore:
                     round_no INTEGER NOT NULL,
                     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
                     content TEXT NOT NULL,
+                    quick_replies_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     PRIMARY KEY (session_id, round_no, role),
                     FOREIGN KEY (session_id) REFERENCES sessions(session_id)
@@ -154,6 +155,19 @@ class ConversationStore:
                     """
                     ALTER TABLE sessions
                     ADD COLUMN round_count INTEGER NOT NULL DEFAULT 0
+                    """
+                )
+            message_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(chat_messages)"
+                )
+            }
+            if "quick_replies_json" not in message_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE chat_messages
+                    ADD COLUMN quick_replies_json TEXT NOT NULL DEFAULT '[]'
                     """
                 )
             connection.execute(
@@ -400,6 +414,7 @@ class ConversationStore:
         round_no: int,
         assistant_content: str,
         *,
+        quick_replies: list[str] | tuple[str, ...] = (),
         model_call: dict[str, Any] | None = None,
     ) -> None:
         """Append the assistant reply and close a previously pending round."""
@@ -424,10 +439,21 @@ class ConversationStore:
             connection.execute(
                 """
                 INSERT INTO chat_messages(
-                    session_id, round_no, role, content, created_at
-                ) VALUES (?, ?, 'assistant', ?, ?)
+                    session_id,
+                    round_no,
+                    role,
+                    content,
+                    quick_replies_json,
+                    created_at
+                ) VALUES (?, ?, 'assistant', ?, ?, ?)
                 """,
-                (session_id, round_no, assistant_content, now),
+                (
+                    session_id,
+                    round_no,
+                    assistant_content,
+                    json.dumps(list(quick_replies), ensure_ascii=False),
+                    now,
+                ),
             )
             connection.execute(
                 """
@@ -582,6 +608,7 @@ class ConversationStore:
                 m.round_no,
                 m.role,
                 m.content,
+                m.quick_replies_json,
                 m.created_at,
                 COALESCE(r.status, 'completed') AS status,
                 r.error
@@ -607,6 +634,7 @@ class ConversationStore:
                 "round": row["round_no"],
                 "role": row["role"],
                 "content": row["content"],
+                "quickReplies": json.loads(row["quick_replies_json"]),
                 "created_at": row["created_at"],
                 "status": row["status"],
                 "error": row["error"],

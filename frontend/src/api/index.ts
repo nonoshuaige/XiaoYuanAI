@@ -77,4 +77,8 @@ export const api = {
       `/api/meeting-room-booking-drafts/${encodeURIComponent(id)}/confirm`,
       { method: 'POST' },
     ),
+  cancelBookingDraft: (id: string) =>
+    request<BookingDraft>(`/api/meeting-room-booking-drafts/${encodeURIComponent(id)}/cancel`, {
+      method: 'POST',
+    }),
 }

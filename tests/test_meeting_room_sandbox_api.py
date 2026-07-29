@@ -219,6 +219,27 @@ class MeetingRoomSandboxApiTests(unittest.TestCase):
         self.assertTrue(result["meetingId"])
         self.assertEqual(result["draft"]["status"], "confirmed")
 
+    def test_booking_card_can_be_cancelled(self):
+        draft = server.meeting_room_store.create_draft(
+            room_id="room-711",
+            floor="7",
+            date="2026/07/29",
+            time_range="15:00-16:00",
+            session_id="cancel-card",
+            round_no=1,
+        )
+
+        cancelled = self.client.post(
+            f"/api/meeting-room-booking-drafts/{draft['draftId']}/cancel"
+        )
+        confirm = self.client.post(
+            f"/api/meeting-room-booking-drafts/{draft['draftId']}/confirm"
+        )
+
+        self.assertEqual(cancelled.status_code, 200)
+        self.assertEqual(cancelled.json()["status"], "cancelled")
+        self.assertEqual(confirm.status_code, 409)
+
     def test_session_context_restores_booking_card_by_round(self):
         server.meeting_room_store.create_draft(
             room_id="room-711",
@@ -269,6 +290,8 @@ class MeetingRoomSandboxApiTests(unittest.TestCase):
         self.assertIn("booking-card", source)
         self.assertIn("保存修改", source)
         self.assertIn("确认预约", source)
+        self.assertIn("取消草稿", source)
+        self.assertIn("cancelBookingDraft", source)
         self.assertIn("confirmBookingDraft", source)
         self.assertIn("is-confirmed", source)
         self.assertIn("booking-countdown", source)

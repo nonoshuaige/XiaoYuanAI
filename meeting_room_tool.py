@@ -825,7 +825,13 @@ class MeetingRoomStore:
             if draft["status"] == "confirmed":
                 return self._confirmed_draft_result(connection, draft)
             if draft["status"] != "pending":
-                raise MeetingRoomDraftStateError("该预约卡片已失效，无法确认")
+                raise MeetingRoomDraftStateError(
+                    (
+                        "该预约卡片已取消，无法确认"
+                        if draft["status"] == "cancelled"
+                        else "该预约卡片已失效，无法确认"
+                    )
+                )
             now = self._now_factory()
             _validate_bookable_slot(
                 draft["booking_date"],
@@ -909,6 +915,36 @@ class MeetingRoomStore:
                 "message": "会议室预约成功",
                 "draft": self._draft_dict(connection, confirmed),
             }
+
+    def cancel_draft(self, draft_id: str) -> dict[str, Any]:
+        """Cancel an unconfirmed draft without touching any real booking."""
+        with self._write_lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            draft = self._expire_draft_if_needed(
+                connection,
+                self._load_draft(connection, draft_id),
+            )
+            if draft["status"] == "cancelled":
+                return self._draft_dict(connection, draft)
+            if draft["status"] != "pending":
+                raise MeetingRoomDraftStateError(
+                    "只有待确认的预约卡片可以取消"
+                )
+            connection.execute(
+                """
+                UPDATE meeting_room_booking_drafts
+                SET status = 'cancelled', updated_at = ?
+                WHERE draft_id = ?
+                """,
+                (
+                    self._now_factory().isoformat(timespec="seconds"),
+                    draft_id,
+                ),
+            )
+            return self._draft_dict(
+                connection,
+                self._load_draft(connection, draft_id),
+            )
 
     def _load_draft(
         self,
@@ -1004,10 +1040,13 @@ class MeetingRoomStore:
             "timeRange": f"{draft['start_time']}-{draft['end_time']}",
             "capacity": draft["capacity"],
             "theme": draft["theme"],
+            "bookedBy": draft["booked_by"],
             "status": draft["status"],
             "bookingId": draft["booking_id"],
             "meetingId": draft["meeting_id"],
             "expiresAt": draft["expires_at"],
+            "createdAt": draft["created_at"],
+            "updatedAt": draft["updated_at"],
         }
 
     def _confirmed_draft_result(
@@ -1326,7 +1365,17 @@ def _validate_bookable_slot(
         f"{date} {start_time}",
         "%Y/%m/%d %H:%M",
     ).replace(tzinfo=SHANGHAI_TIMEZONE)
-    if booking_start < localized_now:
+    booking_end = datetime.strptime(
+        f"{date} {end_time}",
+        "%Y/%m/%d %H:%M",
+    ).replace(tzinfo=SHANGHAI_TIMEZONE)
+    current_slot_start = localized_now.replace(
+        minute=localized_now.minute
+        - localized_now.minute % SLOT_MINUTES,
+        second=0,
+        microsecond=0,
+    )
+    if booking_start < current_slot_start or booking_end <= localized_now:
         raise MeetingRoomError("不能预约过去的时间")
 
 

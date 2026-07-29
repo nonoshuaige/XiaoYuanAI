@@ -29,6 +29,9 @@ const renameError = ref('')
 const deleteTarget = ref<SessionSummary | null>(null)
 const deleting = ref(false)
 const deleteError = ref('')
+const latestAssistantKey = computed(
+  () => [...store.messages].reverse().find((message) => message.role === 'assistant')?.key ?? null,
+)
 
 const modelGroups = computed(() => {
   const groups = new Map<string, { label: string; models: typeof store.models }>()
@@ -263,13 +266,32 @@ onMounted(() => void store.initialize())
         >
           <div class="message-bubble" :class="{ 'artifact-only': message.artifacts.length }">
             <template v-if="message.role === 'assistant'">
-              <MarkdownContent v-if="!message.artifacts.length" :content="message.content" />
+              <MarkdownContent v-if="message.content.trim()" :content="message.content" />
               <BookingDraftCard
                 v-for="draft in message.artifacts"
                 :key="draft.draftId"
                 :draft="draft"
                 @updated="store.updateArtifact(message.key, $event)"
               />
+              <div
+                v-if="
+                  message.key === latestAssistantKey &&
+                  message.quickReplies.length &&
+                  !message.artifacts.length
+                "
+                class="quick-replies"
+                aria-label="快捷回答"
+              >
+                <button
+                  v-for="reply in message.quickReplies"
+                  :key="reply"
+                  type="button"
+                  :disabled="store.sending"
+                  @click="store.send(reply)"
+                >
+                  {{ reply }}
+                </button>
+              </div>
             </template>
             <template v-else>{{ message.content }}</template>
           </div>

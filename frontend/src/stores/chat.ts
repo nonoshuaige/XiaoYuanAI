@@ -89,6 +89,7 @@ export const useChatStore = defineStore('chat', () => {
       key: `${id}-${message.round}-${message.role}`,
       artifacts:
         message.role === 'assistant' ? (context.artifactsByRound[String(message.round)] ?? []) : [],
+      quickReplies: message.quickReplies ?? [],
     }))
   }
 
@@ -107,6 +108,7 @@ export const useChatStore = defineStore('chat', () => {
       status: 'pending',
       error: null,
       artifacts: [],
+      quickReplies: [],
       transient: true,
     })
     const pending: UiMessage = {
@@ -118,6 +120,7 @@ export const useChatStore = defineStore('chat', () => {
       status: 'pending',
       error: null,
       artifacts: [],
+      quickReplies: [],
       transient: true,
     }
     messages.value.push(pending)
@@ -137,6 +140,7 @@ export const useChatStore = defineStore('chat', () => {
       pending.content = result.reply
       pending.status = 'completed'
       pending.artifacts = result.artifacts ?? []
+      pending.quickReplies = result.quickReplies ?? []
       pending.transient = false
       const optimisticUser = messages.value.find(
         (message) => message.key === `optimistic-user-${optimisticRound}`,

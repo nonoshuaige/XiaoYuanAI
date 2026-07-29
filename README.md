@@ -14,9 +14,10 @@
 |---|---|
 | Agent 运行时 | LangChain `create_agent`，结构化 System Prompt，并为会议室 Skill 注入工作流约束 |
 | 找人工具 | 工号 > 手机号 > 姓名主查询，全部线索一致性校验，重名候选消歧 |
-| 会议室 Skill | 可从楼层、房间、日期或时段任一线索查询，确认后重查冲突并预约 |
+| 会议室 Skill | 支持当前半小时即时预约、结构化草稿卡片、人工确认/取消和确认前冲突重查 |
 | 会议室日程沙箱 | Vue 按日期、楼层和房间展示 09:00–18:00 半小时日程 |
-| 上下文管理 | 固定系统规则 + 用户层历史摘要 + 未覆盖原文 + 当前问题 |
+| 上下文管理 | 固定系统规则 + 实时时间/预约卡片状态 + 用户层历史摘要 + 未覆盖原文 + 当前问题 |
+| 快捷回答 | 候选收敛为 2–4 个明确选项时，展示可直接发送并可持久化恢复的回答按钮 |
 | 长对话压缩 | 30/20/10 滚动摘要，后台异步生成，保留全量原文 |
 | 会话管理 | 新建、切换、自动命名、重命名、删除、多会话隔离 |
 | 消息可靠性 | 用户消息先落库，轮次具有 `pending/completed/failed` 状态 |
@@ -212,7 +213,7 @@ AgentRuntime
 会议室页面可直接访问 <http://127.0.0.1:8001/meeting-room-sandbox>。页面是只读
 日程沙箱：顶部选择日期，下方按楼层展示全部会议室；点击房间可查看 09:00–18:00、
 每半小时一段的真实预约状态。页面不创建预约，Agent 的预约结果仍以服务端 Tool
-写入及 `/create` 适配器返回为准。
+生成的结构化预约草稿卡片为准。
 
 员工沙箱 API：
 
@@ -235,8 +236,20 @@ Agent 始终注册：
   候选选择、明确确认和预约结果校验。
   - `queryMeetingRooms` Tool：楼层、房间、日期或时间任一线索都可发起查询；返回
     09:00–18:00 半小时日程、可用时段以及与所问时长相同的候选时间。
-  - `bookMeetingRoom` Tool：必须明确确认，创建前重新查询；冲突时不会创建预约。
-    用户未提供主题时由服务端使用可信预约人生成“XXX预约的会议”，模型不猜姓名。
+  - `bookMeetingRoom` Tool：参数齐全时生成 `meetingRoomBookingDraft` 结构化草稿，
+    模型不得用 Markdown 表格或普通文本模拟卡片。只有用户点击卡片“确认预约”后，
+    服务端才会重新查询冲突并创建真实预约。用户未提供主题时由服务端使用可信预约人
+    生成“XXX预约的会议”，模型不猜姓名。
+
+当天预约允许从当前所在的半小时槽即时生效。例如服务端时间为 15:32 时，可以预约
+15:30 开始、尚未结束且没有冲突的时段；15:00 等当前半小时槽之前的开始时间仍会被
+拒绝。预约草稿有效期为 30 分钟，待确认期间可以编辑、确认或点击“取消草稿”。
+口语化修改时间并生成新卡片不会自动取消旧卡片；若仍有旧卡片处于 `pending`，助手会
+提醒它仍可被确认，用户可以主动取消或等待过期。
+
+服务端会校验模型输出与实际 Tool 结果。如果模型声称已生成预约卡片，但本轮没有真实
+返回 `meetingRoomBookingDraft`，运行时会向模型反馈校验失败并自动重试一次；再次失败
+时只返回“尚未生成”的安全提示，不会把 Markdown 表格当作可确认卡片。
 
 ## 上下文管理
 
@@ -252,6 +265,9 @@ SystemMessage
 SystemMessage
   本轮服务端动态注入的 Asia/Shanghai 当前日期、时间与星期
 
+SystemMessage
+  本会话全部预约草稿的实时状态（pending/confirmed/cancelled/expired）
+
 HumanMessage（可选）
   历史对话摘要，明确标记为“用户层上下文”
 
@@ -265,7 +281,9 @@ HumanMessage
 当前时间上下文在每轮模型调用前重新生成，不写入聊天历史。它用于把用户明确说出的
 “今天”“明天”“后天”等相对日期换算为会议室接口需要的 `yyyy/MM/dd`；不会用来
 猜测用户没有提供的预约参数。用户只说时间时可跨楼层查询，只说房间时可查看该房间
-日程；真正预约仍要求具体房间、日期、时段和明确确认。
+日程；真正预约仍要求具体房间、日期、时段和明确确认。预约草稿状态同样在每轮调用前
+从 SQLite 重新读取，因此无论卡片是否确认、取消或过期，后续 LLM 都能感知最新状态；
+状态上下文不授予模型替用户确认或取消的权限。
 
 ### 权限边界
 
@@ -426,11 +444,12 @@ ollama pull qwen3.5:9b
 | `sessions` | 会话标题、轮次数、创建和更新时间 |
 | `conversation_rounds` | 每一轮的 `pending/completed/failed` 生命周期 |
 | `model_call_audits` | 调试用 model ID、Provider 原始响应、完整 `AIMessage` 和调用状态 |
-| `chat_messages` | 所有 user/assistant 原文 |
+| `chat_messages` | 所有 user/assistant 原文，以及助手消息的快捷回答选项 |
 | `conversation_summaries` | 累计摘要正文、覆盖范围和历史版本 |
 | `people` | 员工目录（工号、姓名、手机号、部门） |
 | `meeting_rooms` | 会议室 ID、名称、楼层、容量和设备 |
 | `meeting_room_bookings` | 预约日期、时段、主题、预约来源和创建时间 |
+| `meeting_room_booking_drafts` | 预约草稿参数、所属会话/轮次、状态、有效期和最终预约凭证 |
 | `app_metadata` | 一次性数据库迁移状态（需要时自动创建） |
 
 `chat_messages` 使用 `(session_id, round_no, role)` 作为复合主键。摘要只影响模型
@@ -456,7 +475,8 @@ ollama pull qwen3.5:9b
 - 当前 session 和模型的 `localStorage` 记忆；
 - 服务端完整聊天记录恢复；
 - Markdown 安全渲染；
-- 可编辑、可过期、需要人工确认的会议室预约卡片。
+- 可编辑、可取消、可过期、需要人工确认的会议室预约卡片；
+- 候选收敛后的快捷回答按钮，点击后直接作为下一条用户消息发送。
 
 浏览器只保存当前 `sessionId` 和选中的 model ID，消息正文以 SQLite 为唯一来源。
 
@@ -489,6 +509,11 @@ npm run dev
 | `GET` | `/api/sessions/{sessionId}/rounds/{round}/model-call` | 获取指定轮完整模型调用调试记录 |
 | `PATCH` | `/api/sessions/{sessionId}` | 重命名会话 |
 | `DELETE` | `/api/sessions/{sessionId}` | 删除会话及关联数据 |
+| `GET` | `/api/meeting-room-booking-drafts/{draftId}` | 获取预约草稿最新状态 |
+| `PUT` | `/api/meeting-room-booking-drafts/{draftId}` | 修改并重新校验预约草稿 |
+| `GET` | `/api/meeting-room-booking-drafts/{draftId}/room-options` | 按草稿条件刷新会议室选项 |
+| `POST` | `/api/meeting-room-booking-drafts/{draftId}/confirm` | 人工确认并创建真实预约 |
+| `POST` | `/api/meeting-room-booking-drafts/{draftId}/cancel` | 取消待确认预约草稿 |
 
 首次发送：
 
@@ -518,9 +543,15 @@ npm run dev
   "round": 1,
   "title": "自动或手动会话标题",
   "model": "实际使用的 model ID",
-  "modelCallUrl": "/api/sessions/会话 ID/rounds/1/model-call"
+  "modelCallUrl": "/api/sessions/会话 ID/rounds/1/model-call",
+  "artifacts": [],
+  "quickReplies": ["选项一", "选项二"]
 }
 ```
+
+`artifacts` 只包含 Tool 真实生成的结构化卡片；普通 Markdown 或模型自行拼出的 JSON
+不会被当作预约卡片。`quickReplies` 为 2–4 个可以直接作为用户回答发送的短选项，
+同时保存在 `chat_messages` 中，因此重新打开会话后仍可恢复。
 
 ## 项目结构
 

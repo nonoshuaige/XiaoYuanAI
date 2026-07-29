@@ -333,6 +333,7 @@ async def chat_endpoint(request: ChatRequest):
             f"{response.round_no}/model-call"
         ),
         "artifacts": list(response.artifacts),
+        "quickReplies": list(response.quick_replies),
     }
 
 
@@ -457,6 +458,21 @@ async def confirm_meeting_room_booking_draft(draft_id: str):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except MeetingRoomError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post(
+    "/api/meeting-room-booking-drafts/{draft_id}/cancel"
+)
+async def cancel_meeting_room_booking_draft(draft_id: str):
+    try:
+        return await run_in_threadpool(
+            meeting_room_store.cancel_draft,
+            draft_id,
+        )
+    except MeetingRoomDraftNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except MeetingRoomDraftStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/sessions/{session_id}/model-calls")

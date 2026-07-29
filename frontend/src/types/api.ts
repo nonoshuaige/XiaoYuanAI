@@ -15,6 +15,7 @@ export interface ChatMessage {
   created_at: string
   status: 'pending' | 'completed' | 'failed'
   error: string | null
+  quickReplies: string[]
 }
 
 export interface ModelOption {
@@ -116,6 +117,7 @@ export interface ChatResponse {
   model: string
   modelCallUrl: string
   artifacts: BookingDraft[]
+  quickReplies: string[]
 }
 
 export interface Person {

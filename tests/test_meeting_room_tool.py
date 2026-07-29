@@ -317,6 +317,46 @@ class MeetingRoomToolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "已失效"):
             store.confirm_draft(draft["draftId"])
 
+    def test_current_half_hour_slot_can_start_immediately(self):
+        store = MeetingRoomStore(
+            Path(self.temp_dir.name) / "immediate-slot.db",
+            now_factory=lambda: datetime.fromisoformat(
+                "2026-07-28T15:32:00+08:00"
+            ),
+        )
+
+        draft = store.create_draft(
+            room_id="room-711",
+            floor="7",
+            date="2026/07/28",
+            time_range="15:30-16:00",
+        )
+
+        self.assertEqual(draft["status"], "pending")
+        with self.assertRaisesRegex(ValueError, "过去"):
+            store.create_draft(
+                room_id="room-711",
+                floor="7",
+                date="2026/07/28",
+                time_range="15:00-16:00",
+            )
+
+    def test_pending_draft_can_be_cancelled_idempotently(self):
+        draft = self.store.create_draft(
+            room_id="room-711",
+            floor="7",
+            date="2026/07/29",
+            time_range="16:00-17:00",
+        )
+
+        cancelled = self.store.cancel_draft(draft["draftId"])
+        repeated = self.store.cancel_draft(draft["draftId"])
+
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertEqual(repeated["status"], "cancelled")
+        with self.assertRaisesRegex(ValueError, "已取消"):
+            self.store.confirm_draft(draft["draftId"])
+
     def test_store_rejects_past_outside_workday_and_non_half_hour(self):
         invalid_slots = (
             ("2026/07/28", "13:00-13:30", "过去"),
