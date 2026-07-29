@@ -15,8 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from agent import get_context, get_runtime, reset_session
+from chat_jobs import ChatJobManager
 from config import get_model_options
-from conversation_store import conversation_store
+from conversation_store import ConversationPendingError, conversation_store
 from meeting_room_tool import (
     DEFAULT_MEETING_CAPACITY,
     MeetingRoomConflictError,
@@ -45,8 +46,20 @@ FRONTEND_FAVICON_PATH = FRONTEND_DIST_DIR / "favicon.svg"
 
 app = FastAPI(title="小原 AI 助手")
 SANDBOX_MODE = os.getenv("XIAOYUAN_SANDBOX") == "1"
+CHAT_JOB_OWNER = "sandbox" if SANDBOX_MODE else "normal"
 people_store = PeopleStore()
 meeting_room_store = MeetingRoomStore(seed_sandbox_data=SANDBOX_MODE)
+
+
+def _complete_chat_job(
+    session_id: str,
+    round_no: int,
+    model_id: str | None,
+):
+    return get_runtime().complete_chat(session_id, round_no, model_id)
+
+
+chat_job_manager = ChatJobManager(_complete_chat_job)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -308,42 +321,56 @@ async def list_models(refresh: bool = False):
     return await run_in_threadpool(get_model_options, refresh=refresh)
 
 
-@app.post("/api/chat")
+@app.on_event("startup")
+async def resume_pending_chat_jobs():
+    """Resume recently persisted turns after a service restart."""
+    pending_rounds = conversation_store.list_pending_rounds(
+        job_owner=CHAT_JOB_OWNER
+    )
+    if CHAT_JOB_OWNER == "normal":
+        pending_rounds.extend(
+            conversation_store.list_pending_rounds(job_owner="default")
+        )
+    for pending in pending_rounds:
+        chat_job_manager.submit(
+            pending["sessionId"],
+            pending["round"],
+            pending["modelId"],
+        )
+
+
+@app.post("/api/chat", status_code=202)
 async def chat_endpoint(request: ChatRequest):
     session_id = request.session_id or secrets.token_hex(8)
     try:
-        response = await run_in_threadpool(
-            _chat,
+        round_no, model_id = get_runtime().begin_chat(
             session_id,
             request.message,
             request.model,
+            job_owner=CHAT_JOB_OWNER,
         )
+        chat_job_manager.submit(session_id, round_no, model_id)
+    except ConversationPendingError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    session = conversation_store.get_session(session_id)
     return {
-        "reply": response.reply,
-        "sessionId": response.session_id,
-        "round": response.round_no,
-        "title": conversation_store.get_session(response.session_id)["title"],
-        "model": response.model_id,
+        "reply": "",
+        "sessionId": session_id,
+        "round": round_no,
+        "status": "pending",
+        "title": session["title"],
+        "model": model_id,
         "modelCallUrl": (
-            f"/api/sessions/{response.session_id}/rounds/"
-            f"{response.round_no}/model-call"
+            f"/api/sessions/{session_id}/rounds/"
+            f"{round_no}/model-call"
         ),
-        "artifacts": list(response.artifacts),
-        "quickReplies": list(response.quick_replies),
+        "artifacts": [],
+        "quickReplies": [],
     }
-
-
-def _chat(
-    session_id: str,
-    message: str,
-    model_id: str | None,
-):
-    """Keep first-use provider discovery and model loading off the event loop."""
-    return get_runtime().chat(session_id, message, model_id)
 
 
 @app.get("/api/sessions/{session_id}")
@@ -521,6 +548,17 @@ async def rename_session(
 async def clear_session(session_id: str):
     try:
         existed = conversation_store.get_session(session_id) is not None
+        latest_round = conversation_store.latest_round(session_id)
+        latest_state = (
+            conversation_store.get_round(session_id, latest_round)
+            if latest_round
+            else None
+        )
+        if latest_state and latest_state["status"] == "pending":
+            raise HTTPException(
+                status_code=409,
+                detail="会话正在后台生成，完成后才能删除",
+            )
         reset_session(session_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -297,13 +297,18 @@ onMounted(() => void store.initialize())
           v-model="composer"
           rows="1"
           maxlength="8000"
-          placeholder="给小原发消息"
+          :placeholder="
+            store.waitingForAssistant ? '正在后台生成，可切换会话或稍后回来' : '给小原发消息'
+          "
           aria-label="消息"
-          :disabled="store.loading"
+          :disabled="store.loading || store.sending || store.waitingForAssistant"
           @keydown="handleComposerKeydown"
         ></textarea>
-        <button type="submit" :disabled="store.sending || !composer.trim()">
-          {{ store.sending ? '发送中' : '发送' }}
+        <button
+          type="submit"
+          :disabled="store.sending || store.waitingForAssistant || !composer.trim()"
+        >
+          {{ store.sending ? '提交中' : store.waitingForAssistant ? '生成中' : '发送' }}
         </button>
         <small>Enter 发送 · Shift + Enter 换行</small>
       </form>

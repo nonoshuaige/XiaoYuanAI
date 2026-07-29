@@ -269,19 +269,77 @@ class AgentRuntime:
         user_message: str,
         model_id: str | None = None,
     ) -> AgentResponse:
+        """Compatibility path that waits for a newly persisted turn."""
+        round_no, selected_model_id = self.begin_chat(
+            session_id,
+            user_message,
+            model_id,
+        )
+        return self.complete_chat(
+            session_id,
+            round_no,
+            selected_model_id,
+        )
+
+    def begin_chat(
+        self,
+        session_id: str,
+        user_message: str,
+        model_id: str | None = None,
+        *,
+        job_owner: str = "default",
+    ) -> tuple[int, str]:
+        """Persist a model turn so it can be completed outside the request."""
         session_id = self.store.validate_session_id(session_id)
         message = user_message.strip()
         if not message:
             raise ValueError("消息不能为空")
         selected_model_id = model_id or self.default_model_id
-        graph = self._get_graph(selected_model_id)
+        if (
+            selected_model_id not in self._models
+            and self._model_factory is None
+        ):
+            raise ValueError(f"不支持的模型：{selected_model_id}")
+        round_no = self.store.begin_round(
+            session_id,
+            message,
+            model_id=selected_model_id,
+            job_owner=job_owner,
+        )
+        return round_no, selected_model_id
+
+    def complete_chat(
+        self,
+        session_id: str,
+        round_no: int,
+        model_id: str | None = None,
+    ) -> AgentResponse:
+        """Complete one durable pending turn in a background worker."""
+        session_id = self.store.validate_session_id(session_id)
+        if round_no < 1:
+            raise ValueError("round_no 必须大于 0")
 
         # Serialize model turns within one session. Compression remains asynchronous
         # and never holds this lock.
         with self._session_lock(session_id):
-            round_no = self.store.begin_round(session_id, message)
+            round_state = self.store.get_round(session_id, round_no)
+            if round_state is None:
+                raise RuntimeError("待生成的对话轮次不存在")
+            if round_state["status"] != "pending":
+                raise RuntimeError(
+                    f"对话轮次无法生成，当前状态为 {round_state['status']}"
+                )
+            message = self.store.get_round_user_message(session_id, round_no)
+            if message is None:
+                raise RuntimeError("待生成轮次缺少用户消息")
+            selected_model_id = (
+                model_id
+                or round_state["modelId"]
+                or self.default_model_id
+            )
             with capture_model_call(selected_model_id) as capture:
                 try:
+                    graph = self._get_graph(selected_model_id)
                     summary, uncovered_messages = self._load_model_context(
                         session_id,
                         through_round=round_no - 1,

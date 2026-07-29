@@ -113,6 +113,7 @@ export interface ChatResponse {
   reply: string
   sessionId: string
   round: number
+  status: 'pending'
   title: string
   model: string
   modelCallUrl: string

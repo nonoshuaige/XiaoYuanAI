@@ -2,15 +2,67 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import { api } from '@/api'
-import type { BookingDraft, ChatMessage, ModelOption, SessionSummary } from '@/types/api'
+import type {
+  BookingDraft,
+  ChatMessage,
+  ModelOption,
+  SessionContext,
+  SessionSummary,
+} from '@/types/api'
 
 const CURRENT_SESSION_KEY = 'xiaoyuan-current-session'
 const SELECTED_MODEL_KEY = 'xiaoyuan-selected-model'
+const CHAT_POLL_INTERVAL_MS = 1_200
 
 export interface UiMessage extends ChatMessage {
   key: string
   artifacts: BookingDraft[]
   transient?: boolean
+}
+
+function createSessionId() {
+  return crypto.randomUUID().replaceAll('-', '').slice(0, 16)
+}
+
+export function contextMessages(context: SessionContext): UiMessage[] {
+  const assistantRounds = new Set(
+    context.messages
+      .filter((message) => message.role === 'assistant')
+      .map((message) => message.round),
+  )
+  return context.messages.flatMap((message) => {
+    const current: UiMessage = {
+      ...message,
+      key: `${context.sessionId}-${message.round}-${message.role}`,
+      artifacts:
+        message.role === 'assistant' ? (context.artifactsByRound[String(message.round)] ?? []) : [],
+      quickReplies: message.quickReplies ?? [],
+    }
+    if (
+      message.role !== 'user' ||
+      assistantRounds.has(message.round) ||
+      !['pending', 'failed'].includes(message.status)
+    ) {
+      return [current]
+    }
+    return [
+      current,
+      {
+        key: `${context.sessionId}-${message.round}-assistant`,
+        round: message.round,
+        role: 'assistant' as const,
+        content:
+          message.status === 'pending'
+            ? '正在思考…'
+            : `生成失败：${message.error || '模型请求失败'}`,
+        quickReplies: [],
+        created_at: message.created_at,
+        status: message.status,
+        error: message.error,
+        artifacts: [],
+      },
+    ]
+  })
 }
 
 export const useChatStore = defineStore('chat', () => {
@@ -24,9 +76,14 @@ export const useChatStore = defineStore('chat', () => {
   const sending = ref(false)
   const error = ref('')
   const sandboxEnabled = ref(false)
+  let pollTimer: ReturnType<typeof setTimeout> | null = null
+  let sessionLoadVersion = 0
 
   const selectedModel = computed(
     () => models.value.find((model) => model.id === selectedModelId.value) ?? null,
+  )
+  const waitingForAssistant = computed(() =>
+    messages.value.some((message) => message.role === 'assistant' && message.status === 'pending'),
   )
 
   async function initialize() {
@@ -68,6 +125,8 @@ export const useChatStore = defineStore('chat', () => {
 
   function newConversation() {
     if (sending.value) return
+    stopPolling()
+    sessionLoadVersion += 1
     currentSessionId.value = null
     localStorage.removeItem(CURRENT_SESSION_KEY)
     title.value = '新对话'
@@ -78,26 +137,68 @@ export const useChatStore = defineStore('chat', () => {
     sessions.value = await api.sessions()
   }
 
+  function stopPolling() {
+    if (pollTimer !== null) {
+      clearTimeout(pollTimer)
+      pollTimer = null
+    }
+  }
+
+  function applyContext(context: SessionContext) {
+    title.value = context.title
+    messages.value = contextMessages(context)
+  }
+
+  function schedulePolling(sessionId: string) {
+    stopPolling()
+    if (
+      currentSessionId.value !== sessionId ||
+      !messages.value.some((message) => message.status === 'pending')
+    ) {
+      return
+    }
+    pollTimer = setTimeout(async () => {
+      pollTimer = null
+      if (currentSessionId.value !== sessionId) return
+      try {
+        const context = await api.session(sessionId)
+        if (currentSessionId.value !== sessionId) return
+        applyContext(context)
+        if (!messages.value.some((message) => message.status === 'pending')) {
+          await refreshSessions()
+        }
+      } catch (caught) {
+        if (currentSessionId.value === sessionId) {
+          error.value = caught instanceof Error ? caught.message : '刷新生成状态失败'
+        }
+      } finally {
+        if (currentSessionId.value === sessionId) {
+          schedulePolling(sessionId)
+        }
+      }
+    }, CHAT_POLL_INTERVAL_MS)
+  }
+
   async function loadSession(id: string) {
     if (sending.value) return
+    const loadVersion = ++sessionLoadVersion
+    stopPolling()
     currentSessionId.value = id
     localStorage.setItem(CURRENT_SESSION_KEY, id)
     const context = await api.session(id)
-    title.value = context.title
-    messages.value = context.messages.map((message) => ({
-      ...message,
-      key: `${id}-${message.round}-${message.role}`,
-      artifacts:
-        message.role === 'assistant' ? (context.artifactsByRound[String(message.round)] ?? []) : [],
-      quickReplies: message.quickReplies ?? [],
-    }))
+    if (loadVersion !== sessionLoadVersion || currentSessionId.value !== id) return
+    applyContext(context)
+    schedulePolling(id)
   }
 
   async function send(content: string) {
     const text = content.trim()
-    if (!text || sending.value) return
+    if (!text || sending.value || waitingForAssistant.value) return
     sending.value = true
     error.value = ''
+    const targetSessionId = currentSessionId.value ?? createSessionId()
+    currentSessionId.value = targetSessionId
+    localStorage.setItem(CURRENT_SESSION_KEY, targetSessionId)
     const optimisticRound = Date.now()
     messages.value.push({
       key: `optimistic-user-${optimisticRound}`,
@@ -129,18 +230,18 @@ export const useChatStore = defineStore('chat', () => {
       const payload: { message: string; model: string | null; sessionId?: string } = {
         message: text,
         model: selectedModelId.value,
+        sessionId: targetSessionId,
       }
-      if (currentSessionId.value) payload.sessionId = currentSessionId.value
       const result = await api.chat(payload)
       currentSessionId.value = result.sessionId
       localStorage.setItem(CURRENT_SESSION_KEY, result.sessionId)
       title.value = result.title
       pending.key = `${result.sessionId}-${result.round}-assistant`
       pending.round = result.round
-      pending.content = result.reply
-      pending.status = 'completed'
-      pending.artifacts = result.artifacts ?? []
-      pending.quickReplies = result.quickReplies ?? []
+      pending.content = '正在思考…'
+      pending.status = 'pending'
+      pending.artifacts = []
+      pending.quickReplies = []
       pending.transient = false
       const optimisticUser = messages.value.find(
         (message) => message.key === `optimistic-user-${optimisticRound}`,
@@ -148,16 +249,25 @@ export const useChatStore = defineStore('chat', () => {
       if (optimisticUser) {
         optimisticUser.key = `${result.sessionId}-${result.round}-user`
         optimisticUser.round = result.round
-        optimisticUser.status = 'completed'
+        optimisticUser.status = 'pending'
         optimisticUser.transient = false
       }
       await refreshSessions()
+      schedulePolling(result.sessionId)
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : '发送失败'
-      pending.content = `出错了：${message}`
-      pending.status = 'failed'
-      pending.error = message
-      pending.transient = false
+      try {
+        const context = await api.session(targetSessionId)
+        if (currentSessionId.value === targetSessionId) {
+          applyContext(context)
+          schedulePolling(targetSessionId)
+        }
+      } catch {
+        const message = caught instanceof Error ? caught.message : '发送失败'
+        pending.content = `出错了：${message}`
+        pending.status = 'failed'
+        pending.error = message
+        pending.transient = false
+      }
     } finally {
       sending.value = false
     }
@@ -190,6 +300,7 @@ export const useChatStore = defineStore('chat', () => {
     currentSessionId,
     selectedModelId,
     selectedModel,
+    waitingForAssistant,
     title,
     loading,
     sending,

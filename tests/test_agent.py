@@ -24,7 +24,7 @@ from agent import (
     _meeting_room_quick_replies,
     _strip_stale_draft_reminders,
 )
-from conversation_store import ConversationStore
+from conversation_store import ConversationPendingError, ConversationStore
 from people_tool import PeopleStore, create_find_person_tool
 from prompts import (
     SUMMARY_SYSTEM_PROMPT,
@@ -100,6 +100,17 @@ class FailingAfterPersistenceModel(FakeListChatModel):
             and messages[-1]["status"] == "pending"
         )
         raise RuntimeError("模拟模型失败")
+
+
+class BlockingChatModel(FakeListChatModel):
+    _started: threading.Event = PrivateAttr(default_factory=threading.Event)
+    _release: threading.Event = PrivateAttr(default_factory=threading.Event)
+
+    def _call(self, *args, **kwargs):
+        self._started.set()
+        if not self._release.wait(timeout=5):
+            raise TimeoutError("test did not release chat model")
+        return super()._call(*args, **kwargs)
 
 
 class AgentRuntimeTests(unittest.TestCase):
@@ -605,6 +616,71 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(failed_calls[0]["status"], "failed")
         self.assertIsNone(failed_calls[0]["langchainAIMessage"])
         self.assertIn("模拟模型失败", failed_calls[0]["error"])
+
+    def test_durable_turn_can_complete_after_original_request_returns(self):
+        model = BlockingChatModel(responses=["后台回复"])
+        runtime = self.make_runtime(model)
+
+        round_no, model_id = runtime.begin_chat(
+            "async-turn",
+            "先保存再后台生成",
+        )
+
+        self.assertEqual(round_no, 1)
+        self.assertEqual(model_id, "default")
+        self.assertFalse(model._started.is_set())
+        self.assertEqual(
+            self.store.get_messages("async-turn"),
+            [
+                {
+                    "round": 1,
+                    "role": "user",
+                    "content": "先保存再后台生成",
+                    "quickReplies": [],
+                    "created_at": self.store.get_messages("async-turn")[0][
+                        "created_at"
+                    ],
+                    "status": "pending",
+                    "error": None,
+                }
+            ],
+        )
+
+        worker = threading.Thread(
+            target=runtime.complete_chat,
+            args=("async-turn", round_no, model_id),
+        )
+        worker.start()
+        self.assertTrue(model._started.wait(timeout=1))
+        self.assertEqual(
+            self.store.get_round("async-turn", round_no)["status"],
+            "pending",
+        )
+        model._release.set()
+        worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        messages = self.store.get_messages("async-turn")
+        self.assertEqual(
+            [(message["role"], message["content"]) for message in messages],
+            [("user", "先保存再后台生成"), ("assistant", "后台回复")],
+        )
+        self.assertTrue(
+            all(message["status"] == "completed" for message in messages)
+        )
+
+    def test_session_rejects_a_second_turn_while_generation_is_pending(self):
+        runtime = self.make_runtime(FakeListChatModel(responses=["unused"]))
+        runtime.begin_chat("pending-session", "第一条")
+
+        with self.assertRaises(ConversationPendingError):
+            runtime.begin_chat("pending-session", "第二条")
+
+        self.assertEqual(self.store.latest_round("pending-session"), 1)
+        self.assertEqual(
+            self.store.get_round("pending-session", 1)["status"],
+            "pending",
+        )
 
     def test_summary_is_user_context_and_never_changes_system_prompt(self):
         for index in range(1, 21):

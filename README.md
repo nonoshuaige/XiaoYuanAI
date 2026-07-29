@@ -17,10 +17,10 @@
 | 会议室 Skill | 支持当前半小时即时预约、结构化草稿卡片、人工确认/取消和确认前冲突重查 |
 | 会议室日程沙箱 | Vue 按日期、楼层和房间展示 09:00–18:00 半小时日程 |
 | 上下文管理 | 固定系统规则 + 实时时间/预约卡片状态 + 用户层历史摘要 + 未覆盖原文 + 当前问题 |
-| 快捷回答 | 候选收敛为 2–4 个明确选项时，展示可直接发送并可持久化恢复的回答按钮 |
+| 快捷回答 | 候选收敛为 2–4 个明确选项时，展示当前轮可直接发送的临时回答按钮 |
 | 长对话压缩 | 30/20/10 滚动摘要，后台异步生成，保留全量原文 |
 | 会话管理 | 新建、切换、自动命名、重命名、删除、多会话隔离 |
-| 消息可靠性 | 用户消息先落库，轮次具有 `pending/completed/failed` 状态 |
+| 消息可靠性 | 用户消息先落库，LLM 后台生成；离开页面或刷新后按 `pending/completed/failed` 状态恢复 |
 | 模型管理 | 展示已配置远程 Provider 和可用本地 Provider，支持目录发现与切换 |
 | 模型加载 | 按 model ID 首次使用时加载，模型实例与 Agent graph 进程内缓存 |
 | 本地模型 | 自动发现本机 Ollama 模型，通过 OpenAI 兼容接口调用 |
@@ -100,7 +100,10 @@ FastAPI API 与前端构建产物
   │
   ├── 模型目录与 Provider 配置
   ├── 会话增删改查
-  └── 聊天请求
+  └── 聊天任务受理（202 Accepted）
+        │
+        ▼
+SQLite pending 轮次 + 后台 ChatJobManager
         │
         ▼
 AgentRuntime
@@ -123,14 +126,21 @@ AgentRuntime
 
 ```text
 收到用户问题
-  → 用户消息落库，轮次标记为 pending
+  → 前端预生成 sessionId，用户消息和所选 model ID 落库
+  → 轮次标记为 pending，HTTP 立即返回 202
+  → 后台 ChatJobManager 领取任务
   → 从 SQLite 读取最新摘要和未覆盖原文
   → 构建本次临时消息 State
   → 调用选中的模型，按需执行工具
   → 保存 Provider 响应、完整 AIMessage 和 assistant 回复
   → 轮次标记为 completed
+  → 前端轮询会话并替换“正在思考…”占位
   → 必要时提交后台摘要任务
 ```
+
+用户切换会话、离开聊天页或刷新不会取消后台任务。前端重新进入会话时从 SQLite
+恢复 pending 占位并继续轮询；服务重启时会扫描持久化 pending 轮次并重新提交。
+同一会话在上一轮完成前拒绝重复发送，但不阻止用户切换到其他会话。
 
 模型调用失败时：
 
@@ -502,7 +512,7 @@ npm run dev
 |---|---|---|
 | `GET` | `/api/models` | 获取当前配置下的模型目录 |
 | `GET` | `/api/models?refresh=true` | 强制刷新 Coding Plan 模型目录 |
-| `POST` | `/api/chat` | 发送消息并选择模型 |
+| `POST` | `/api/chat` | 持久化消息并提交后台模型任务，返回 `202 pending` |
 | `GET` | `/api/sessions` | 获取真实会话列表 |
 | `GET` | `/api/sessions/{sessionId}` | 获取会话消息、摘要和压缩状态 |
 | `GET` | `/api/sessions/{sessionId}/model-calls` | 获取会话全部模型调用调试记录 |
@@ -534,30 +544,33 @@ npm run dev
 }
 ```
 
-一次成功响应包含：
+任务受理响应包含：
 
 ```json
 {
-  "reply": "模型回复",
+  "reply": "",
   "sessionId": "会话 ID",
   "round": 1,
+  "status": "pending",
   "title": "自动或手动会话标题",
   "model": "实际使用的 model ID",
   "modelCallUrl": "/api/sessions/会话 ID/rounds/1/model-call",
   "artifacts": [],
-  "quickReplies": ["选项一", "选项二"]
+  "quickReplies": []
 }
 ```
 
-`artifacts` 只包含 Tool 真实生成的结构化卡片；普通 Markdown 或模型自行拼出的 JSON
-不会被当作预约卡片。`quickReplies` 为 2–4 个可以直接作为用户回答发送的短选项，
-同时保存在 `chat_messages` 中，因此重新打开会话后仍可恢复。
+最终回复、Tool 卡片和快捷回答通过 `GET /api/sessions/{sessionId}` 获取。`artifacts`
+只包含 Tool 真实生成的结构化卡片；普通 Markdown 或模型自行拼出的 JSON 不会被
+当作预约卡片。`quickReplies` 为 2–4 个可以直接作为用户回答发送的临时短选项；
+用户点击或发送新消息后不再显示历史选项。
 
 ## 项目结构
 
 ```text
 .
 ├── agent.py                 # Agent 运行时、上下文重建、模型 graph 缓存、异步摘要
+├── chat_jobs.py             # 持久化 pending 轮次的后台 LLM 任务调度
 ├── config.py                # Provider 配置、模型发现、目录状态和模型创建
 ├── conversation_store.py    # SQLite schema、会话、轮次、消息和摘要持久化
 ├── model_audit.py           # Provider HTTP 捕获与 AIMessage 完整序列化

@@ -37,6 +37,14 @@ class ConversationSummary:
     created_at: str
 
 
+class ConversationPendingError(RuntimeError):
+    """Raised when a session already has an unfinished model turn."""
+
+    def __init__(self, round_no: int):
+        self.round_no = round_no
+        super().__init__(f"第 {round_no} 轮仍在生成，请等待完成后再发送")
+
+
 class ConversationStore:
     """Keep the full transcript and cumulative summary versions in SQLite."""
 
@@ -76,6 +84,8 @@ class ConversationStore:
                 CREATE TABLE IF NOT EXISTS conversation_rounds (
                     session_id TEXT NOT NULL,
                     round_no INTEGER NOT NULL,
+                    model_id TEXT,
+                    job_owner TEXT NOT NULL DEFAULT 'default',
                     status TEXT NOT NULL
                         CHECK (status IN ('pending', 'completed', 'failed')),
                     error TEXT,
@@ -168,6 +178,26 @@ class ConversationStore:
                     """
                     ALTER TABLE chat_messages
                     ADD COLUMN quick_replies_json TEXT NOT NULL DEFAULT '[]'
+                    """
+                )
+            round_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(conversation_rounds)"
+                )
+            }
+            if "model_id" not in round_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE conversation_rounds
+                    ADD COLUMN model_id TEXT
+                    """
+                )
+            if "job_owner" not in round_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE conversation_rounds
+                    ADD COLUMN job_owner TEXT NOT NULL DEFAULT 'default'
                     """
                 )
             connection.execute(
@@ -266,6 +296,10 @@ class ConversationStore:
                 connection.execute("PRAGMA user_version = 3")
             if schema_version < 4:
                 connection.execute("PRAGMA user_version = 4")
+            if schema_version < 5:
+                connection.execute("PRAGMA user_version = 5")
+            if schema_version < 6:
+                connection.execute("PRAGMA user_version = 6")
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         session_id = self.validate_session_id(session_id)
@@ -329,6 +363,9 @@ class ConversationStore:
         self,
         session_id: str,
         user_content: str,
+        *,
+        model_id: str | None = None,
+        job_owner: str = "default",
     ) -> int:
         """Persist the user message before any model request starts."""
         session_id = self.validate_session_id(session_id)
@@ -345,17 +382,18 @@ class ConversationStore:
                 """,
                 (session_id, now, now),
             )
-            connection.execute(
+            pending = connection.execute(
                 """
-                UPDATE conversation_rounds
-                SET
-                    status = 'failed',
-                    error = COALESCE(error, '上一轮请求已中断'),
-                    completed_at = ?
+                SELECT round_no
+                FROM conversation_rounds
                 WHERE session_id = ? AND status = 'pending'
+                ORDER BY round_no
+                LIMIT 1
                 """,
-                (now, session_id),
-            )
+                (session_id,),
+            ).fetchone()
+            if pending is not None:
+                raise ConversationPendingError(int(pending["round_no"]))
             row = connection.execute(
                 """
                 SELECT round_count + 1 AS next_round
@@ -370,13 +408,15 @@ class ConversationStore:
                 INSERT INTO conversation_rounds(
                     session_id,
                     round_no,
+                    model_id,
+                    job_owner,
                     status,
                     error,
                     created_at,
                     completed_at
-                ) VALUES (?, ?, 'pending', NULL, ?, NULL)
+                ) VALUES (?, ?, ?, ?, 'pending', NULL, ?, NULL)
                 """,
-                (session_id, round_no, now),
+                (session_id, round_no, model_id, job_owner, now),
             )
             connection.execute(
                 """
@@ -666,6 +706,8 @@ class ConversationStore:
                 """
                 SELECT
                     round_no,
+                    model_id,
+                    job_owner,
                     status,
                     error,
                     created_at,
@@ -679,11 +721,74 @@ class ConversationStore:
             return None
         return {
             "round": int(row["round_no"]),
+            "modelId": row["model_id"],
+            "jobOwner": row["job_owner"],
             "status": row["status"],
             "error": row["error"],
             "created_at": row["created_at"],
             "completed_at": row["completed_at"],
         }
+
+    def get_round_user_message(
+        self,
+        session_id: str,
+        round_no: int,
+    ) -> str | None:
+        """Return the durable user input for one model turn."""
+        session_id = self.validate_session_id(session_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT content
+                FROM chat_messages
+                WHERE
+                    session_id = ?
+                    AND round_no = ?
+                    AND role = 'user'
+                """,
+                (session_id, round_no),
+            ).fetchone()
+        return str(row["content"]) if row is not None else None
+
+    def list_pending_rounds(
+        self,
+        *,
+        job_owner: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List durable model turns that need a background worker."""
+        query = """
+            SELECT
+                r.session_id,
+                r.round_no,
+                r.model_id,
+                r.job_owner,
+                r.created_at,
+                m.content AS user_content
+            FROM conversation_rounds AS r
+            JOIN chat_messages AS m
+                ON m.session_id = r.session_id
+                AND m.round_no = r.round_no
+                AND m.role = 'user'
+            WHERE r.status = 'pending'
+        """
+        parameters: tuple[str, ...] = ()
+        if job_owner is not None:
+            query += " AND r.job_owner = ?"
+            parameters = (job_owner,)
+        query += " ORDER BY r.created_at, r.session_id, r.round_no"
+        with self._connect() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        return [
+            {
+                "sessionId": row["session_id"],
+                "round": int(row["round_no"]),
+                "modelId": row["model_id"],
+                "jobOwner": row["job_owner"],
+                "userContent": row["user_content"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
 
     def get_latest_summary(
         self,
