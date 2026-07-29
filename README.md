@@ -153,14 +153,24 @@ AgentRuntime
 “员工沙箱”和“会议室沙箱”入口，以及对应页面/API 是否开放，不再切换整套数据库。
 员工、会议室、预约、会话、摘要和模型审计记录全部保存在同一个数据库中。
 
-运行以下命令会启用入口并启动网页服务；如果统一数据库是首次创建，还会幂等写入
-10 条虚构员工记录、6F/7F/8F 共 9 间会议室和当日示例日程：
+正常模式启动在 8000 端口，聊天页不会显示业务沙箱入口：
 
 ```bash
-/Users/zypro/Desktop/pythonenv/envs/XiaoYuan/bin/python sandbox.py
+/Users/zypro/Desktop/pythonenv/envs/XiaoYuan/bin/python -m uvicorn \
+  server:app --host 127.0.0.1 --port 8000
 ```
 
-浏览器访问 <http://127.0.0.1:8000>。只初始化和验证数据、不启动服务：
+需要同时查看沙箱时，可另开终端在 8001 端口启动沙箱模式。它会显示员工和会议室
+沙箱入口；如果统一数据库是首次创建，还会幂等写入 10 条虚构员工记录，并初始化
+6F/7F/8F 共 9 间会议室和当日示例日程：
+
+```bash
+/Users/zypro/Desktop/pythonenv/envs/XiaoYuan/bin/python sandbox.py --port 8001
+```
+
+此时正常模式访问 <http://127.0.0.1:8000>，沙箱模式访问
+<http://127.0.0.1:8001>，两者共同读写 `data/xiaoyuan.db`。只初始化和验证数据、
+不启动服务：
 
 ```bash
 /Users/zypro/Desktop/pythonenv/envs/XiaoYuan/bin/python sandbox.py --seed-only
@@ -181,11 +191,11 @@ AgentRuntime
 状态后，两个旧库都不再参与运行。
 
 启动后可从聊天页侧栏进入“员工沙箱”，也可以直接访问
-<http://127.0.0.1:8000/employee-sandbox>。页面支持查看、搜索、新增、编辑和删除，
+<http://127.0.0.1:8001/employee-sandbox>。页面支持查看、搜索、新增、编辑和删除，
 每次操作都会立即写入统一 SQLite 数据库的 `people` 表。仅在统一数据库文件首次创建
 时写入初始虚构数据，因此页面修改和删除（包括删除全部员工）在服务重启后仍会保留。
 
-会议室页面可直接访问 <http://127.0.0.1:8000/meeting-room-sandbox>。页面是只读
+会议室页面可直接访问 <http://127.0.0.1:8001/meeting-room-sandbox>。页面是只读
 日程沙箱：顶部选择日期，下方按楼层展示全部会议室；点击房间可查看 09:00–18:00、
 每半小时一段的真实预约状态。页面不创建预约，Agent 的预约结果仍以服务端 Tool
 写入及 `/create` 适配器返回为准。
