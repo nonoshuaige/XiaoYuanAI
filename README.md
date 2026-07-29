@@ -147,8 +147,12 @@ AgentRuntime
 
 ### 虚构员工沙箱
 
-仓库提供独立的 `data/sandbox.db` 沙箱，不会污染默认的
-`data/xiaoyuan.db`。运行以下命令会幂等写入 10 条虚构员工记录并启动网页服务：
+沙箱模式与普通模式共用 `data/xiaoyuan.db`。它只控制聊天页左上角是否显示
+“员工沙箱”入口，以及员工管理页面/API 是否开放，不再切换整套数据库。员工目录作为
+独立的 `people` 表与会话、摘要和模型审计记录保存在同一个数据库中。
+
+运行以下命令会启用入口并启动网页服务；如果统一数据库是首次创建，还会幂等写入
+10 条虚构员工记录：
 
 ```bash
 /Users/zypro/Desktop/pythonenv/envs/XiaoYuan/bin/python sandbox.py
@@ -168,13 +172,15 @@ AgentRuntime
 - `帮我找张三`（会返回研发部和财务部两位候选）
 - `找工号 XY-S003、手机号 13800000001、姓名张三`（会提示线索冲突）
 
-沙箱仍会使用 `.env` 中配置的模型服务；仅 SQLite 数据与默认环境隔离。可通过
-`XIAOYUAN_DB_PATH` 为普通启动指定其他数据库。
+沙箱仍会使用 `.env` 中配置的模型服务。`XIAOYUAN_DB_PATH` 若已配置，会同时作用于
+普通模式和沙箱模式；`sandbox.py` 不会再覆盖它。升级后首次启动沙箱模式时，程序会
+将旧 `data/sandbox.db` 中的会话、消息、摘要、模型审计和员工记录一次性安全合并到
+默认的 `data/xiaoyuan.db`，校验无冲突后记录迁移状态，旧库不再参与运行。
 
 启动后可从聊天页侧栏进入“员工沙箱”，或直接访问
 <http://127.0.0.1:8000/employee-sandbox>。页面支持查看、搜索、新增、编辑和删除，
-每次操作都会立即写入当前沙箱 SQLite 数据库。沙箱仅在数据库文件首次创建时写入
-初始虚构数据，因此页面修改和删除（包括删除全部员工）在服务重启后仍会保留。
+每次操作都会立即写入统一 SQLite 数据库的 `people` 表。仅在统一数据库文件首次创建
+时写入初始虚构数据，因此页面修改和删除（包括删除全部员工）在服务重启后仍会保留。
 
 员工沙箱 API：
 
@@ -370,6 +376,8 @@ ollama pull qwen3.5:9b
 | `model_call_audits` | 调试用 model ID、Provider 原始响应、完整 `AIMessage` 和调用状态 |
 | `chat_messages` | 所有 user/assistant 原文 |
 | `conversation_summaries` | 累计摘要正文、覆盖范围和历史版本 |
+| `people` | 员工目录（工号、姓名、手机号、部门） |
+| `app_metadata` | 一次性数据库迁移状态（需要时自动创建） |
 
 `chat_messages` 使用 `(session_id, round_no, role)` 作为复合主键。摘要只影响模型
 上下文的构建方式，不会删除或改写完整聊天记录。
@@ -442,7 +450,7 @@ ollama pull qwen3.5:9b
 ├── conversation_store.py    # SQLite schema、会话、轮次、消息和摘要持久化
 ├── model_audit.py           # Provider HTTP 捕获与 AIMessage 完整序列化
 ├── server.py                # FastAPI 页面与 JSON API
-├── sandbox.py               # 虚构员工数据与隔离沙箱启动入口
+├── sandbox.py               # 统一数据库迁移、虚构员工数据与沙箱入口
 ├── static/
 │   ├── index.html           # 原生 Web 聊天界面
 │   └── employee-sandbox.html # 员工沙箱 CRUD 页面
@@ -450,7 +458,7 @@ ollama pull qwen3.5:9b
 │   ├── test_agent.py        # 会话、上下文、失败恢复、摘要和懒加载测试
 │   ├── test_people_tool.py  # 找人主查询、线索冲突、消歧和 Tool 输出测试
 │   ├── test_employee_sandbox_api.py # 员工沙箱页面与 CRUD API 测试
-│   ├── test_sandbox.py      # 虚构数据幂等写入与沙箱数据库隔离测试
+│   ├── test_sandbox.py      # 虚构数据、旧库迁移与统一数据库测试
 │   ├── test_config.py       # Provider、模型目录和模型选择测试
 │   └── test_model_audit.py  # Provider 原始响应与 AIMessage 序列化测试
 ├── .env.example             # Provider 配置示例
@@ -494,4 +502,4 @@ python -m unittest discover -s tests -v
 
 ## 版本
 
-当前版本：**1.4 找人工具与隔离沙箱**
+当前版本：**1.5 统一数据库与员工沙箱入口**

@@ -1,15 +1,20 @@
-"""Seed a fictional employee directory and run XiaoYuan in an isolated sandbox."""
+"""Enable the employee sandbox UI while using XiaoYuan's shared database."""
 
 from __future__ import annotations
 
 import argparse
 import os
+import sqlite3
 from pathlib import Path
 from typing import Protocol
 
+from dotenv import load_dotenv
+
 
 PROJECT_DIR = Path(__file__).resolve().parent
-DEFAULT_SANDBOX_DB_PATH = PROJECT_DIR / "data" / "sandbox.db"
+DEFAULT_XIAOYUAN_DB_PATH = PROJECT_DIR / "data" / "xiaoyuan.db"
+LEGACY_SANDBOX_DB_PATH = PROJECT_DIR / "data" / "sandbox.db"
+LEGACY_MIGRATION_KEY = "legacy_sandbox_database_merged_v1"
 
 SANDBOX_PEOPLE = (
     {
@@ -93,14 +98,144 @@ def seed_sandbox_people(store: PeopleWriter) -> int:
     return len(SANDBOX_PEOPLE)
 
 
+def migrate_legacy_sandbox_database(
+    target_path: Path | str,
+    source_path: Path | str = LEGACY_SANDBOX_DB_PATH,
+) -> dict[str, int]:
+    """Merge the old isolated sandbox database into the shared database once."""
+    target = Path(target_path).expanduser().resolve()
+    source = Path(source_path).expanduser().resolve()
+    if source == target or not source.exists():
+        return {}
+
+    table_specs = (
+        (
+            "sessions",
+            ("session_id", "title", "round_count", "created_at", "updated_at"),
+            ("session_id",),
+        ),
+        (
+            "conversation_rounds",
+            (
+                "session_id",
+                "round_no",
+                "status",
+                "error",
+                "created_at",
+                "completed_at",
+            ),
+            ("session_id", "round_no"),
+        ),
+        (
+            "chat_messages",
+            ("session_id", "round_no", "role", "content", "created_at"),
+            ("session_id", "round_no", "role"),
+        ),
+        (
+            "conversation_summaries",
+            ("session_id", "content", "start_round", "end_round", "created_at"),
+            ("session_id", "end_round"),
+        ),
+        (
+            "model_call_audits",
+            (
+                "session_id",
+                "round_no",
+                "model_id",
+                "status",
+                "provider_responses_json",
+                "langchain_ai_message_json",
+                "error",
+                "created_at",
+            ),
+            ("session_id", "round_no"),
+        ),
+        (
+            "people",
+            ("employee_id", "name", "phone", "department"),
+            ("employee_id",),
+        ),
+    )
+
+    migrated: dict[str, int] = {}
+    connection = sqlite3.connect(target, timeout=10)
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        if connection.execute(
+            "SELECT 1 FROM app_metadata WHERE key = ?",
+            (LEGACY_MIGRATION_KEY,),
+        ).fetchone():
+            return {}
+
+        connection.execute("ATTACH DATABASE ? AS legacy", (str(source),))
+        source_tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM legacy.sqlite_master WHERE type = 'table'"
+            )
+        }
+        connection.execute("BEGIN IMMEDIATE")
+        for table, columns, key_columns in table_specs:
+            if table not in source_tables:
+                continue
+            column_list = ", ".join(columns)
+            before = connection.total_changes
+            connection.execute(
+                f"""
+                INSERT OR IGNORE INTO main.{table} ({column_list})
+                SELECT {column_list} FROM legacy.{table}
+                """
+            )
+            migrated[table] = connection.total_changes - before
+
+            join_clause = " AND ".join(
+                f"target.{column} = source.{column}" for column in key_columns
+            )
+            mismatch_clause = " OR ".join(
+                f"target.{column} IS NOT source.{column}" for column in columns
+            )
+            mismatch_count = connection.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM legacy.{table} AS source
+                LEFT JOIN main.{table} AS target ON {join_clause}
+                WHERE target.{key_columns[0]} IS NULL OR {mismatch_clause}
+                """
+            ).fetchone()[0]
+            if mismatch_count:
+                raise RuntimeError(
+                    f"旧沙箱数据库合并冲突：{table} 有 "
+                    f"{mismatch_count} 条记录无法安全合并"
+                )
+
+        connection.execute(
+            "INSERT INTO app_metadata(key, value) VALUES (?, ?)",
+            (LEGACY_MIGRATION_KEY, str(source)),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        try:
+            connection.execute("DETACH DATABASE legacy")
+        except sqlite3.OperationalError:
+            pass
+        connection.close()
+    return migrated
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="初始化虚构员工数据并运行小原 AI 沙箱。",
-    )
-    parser.add_argument(
-        "--db",
-        default=str(DEFAULT_SANDBOX_DB_PATH),
-        help="沙箱 SQLite 路径，默认 data/sandbox.db。",
+        description="使用统一数据库启动小原 AI 员工沙箱入口。",
     )
     parser.add_argument(
         "--seed-only",
@@ -111,23 +246,36 @@ def main() -> None:
     parser.add_argument("--port", default=8000, type=int)
     args = parser.parse_args()
 
-    db_path = Path(args.db).expanduser()
+    load_dotenv(PROJECT_DIR / ".env")
+    configured_db_path = os.getenv("XIAOYUAN_DB_PATH")
+    db_path = Path(configured_db_path or DEFAULT_XIAOYUAN_DB_PATH).expanduser()
     if not db_path.is_absolute():
         db_path = PROJECT_DIR / db_path
     db_path = db_path.resolve()
     database_existed = db_path.exists()
 
-    # Shared stores resolve their default path at import time.
-    os.environ["XIAOYUAN_DB_PATH"] = str(db_path)
+    # Sandbox mode only controls access to its page and API. It does not select
+    # a separate database.
     os.environ["XIAOYUAN_SANDBOX"] = "1"
     os.chdir(PROJECT_DIR)
 
     from people_tool import PeopleStore
 
-    people_store = PeopleStore()
+    people_store = PeopleStore(db_path)
+    migrated: dict[str, int] = {}
+    if db_path == DEFAULT_XIAOYUAN_DB_PATH:
+        migrated = migrate_legacy_sandbox_database(db_path)
+        if migrated:
+            details = "，".join(
+                f"{table} {count} 条"
+                for table, count in migrated.items()
+                if count
+            )
+            print(f"已将旧 sandbox.db 合并到统一数据库：{details or '无新增记录'}")
+
     existing_people = people_store.list_all()
     if database_existed:
-        print(f"已保留沙箱中的 {len(existing_people)} 条员工数据")
+        print(f"已保留统一数据库中的 {len(existing_people)} 条员工数据")
     else:
         seeded_count = seed_sandbox_people(people_store)
         checks = {
@@ -139,7 +287,7 @@ def main() -> None:
         if any(status != "found" for status in checks.values()):
             raise RuntimeError(f"沙箱员工数据校验失败：{checks}")
         print(f"已写入并验证 {seeded_count} 条虚构员工数据")
-    print(f"沙箱数据库：{db_path}")
+    print(f"统一数据库：{db_path}")
     if args.seed_only:
         return
 

@@ -506,7 +506,7 @@
       <div class="topbar-actions">
         <span class="environment">
           <span class="environment-dot" aria-hidden="true"></span>
-          沙箱数据库已连接
+          统一数据库已连接
         </span>
         <a class="back-link" href="/">
           <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -524,7 +524,7 @@
           <p class="eyebrow">Employee directory</p>
           <h2 id="pageTitle">在这里修改，<br>下一次找人立即生效。</h2>
           <p class="intro-copy">
-            所有变更直接保存到当前沙箱 SQLite 数据库。工号和手机号必须唯一，
+            所有变更直接保存到 xiaoyuan.db 的 people 表。工号和手机号必须唯一，
             姓名允许重复，部门可用于重名消歧。
           </p>
         </div>
@@ -612,7 +612,7 @@
       <div class="dialog-header">
         <div>
           <h2 id="personDialogTitle">新增员工</h2>
-          <p id="personDialogSubtitle">填写四项信息并保存到沙箱数据库。</p>
+          <p id="personDialogSubtitle">填写四项信息并保存到统一数据库。</p>
         </div>
         <button class="dialog-close" id="closePersonDialog" type="button"
           aria-label="关闭">×</button>
@@ -833,7 +833,7 @@
       personForm.reset();
       formError.textContent = "";
       personDialogTitle.textContent = "新增员工";
-      personDialogSubtitle.textContent = "填写四项信息并保存到沙箱数据库。";
+      personDialogSubtitle.textContent = "填写四项信息并保存到统一数据库。";
       savePerson.textContent = "保存员工";
       personDialog.showModal();
       document.querySelector("#employeeId").focus();
@@ -865,7 +865,7 @@
         Object.assign(document.createElement("strong"), {
           textContent: `${person.name}（${person.employee_id}）`,
         }),
-        document.createTextNode("。该操作会立即写入沙箱数据库，且无法撤销。"),
+        document.createTextNode("。该操作会立即写入统一数据库，且无法撤销。"),
       );
       deleteDialog.showModal();
       confirmDelete.focus();
