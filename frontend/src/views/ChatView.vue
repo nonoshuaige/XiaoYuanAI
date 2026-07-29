@@ -268,7 +268,11 @@ onMounted(() => void store.initialize())
                 @updated="store.updateArtifact(message.key, $event)"
               />
               <div
-                v-if="message.quickReplies.length && !message.artifacts.length"
+                v-if="
+                  message.quickReplies.length &&
+                  !message.artifacts.length &&
+                  quickRepliesAreActionable(messageIndex)
+                "
                 class="quick-replies"
                 aria-label="快捷回答"
               >
@@ -276,7 +280,7 @@ onMounted(() => void store.initialize())
                   v-for="reply in message.quickReplies"
                   :key="reply"
                   type="button"
-                  :disabled="store.sending || !quickRepliesAreActionable(messageIndex)"
+                  :disabled="store.sending"
                   @click="store.send(reply)"
                 >
                   {{ reply }}
