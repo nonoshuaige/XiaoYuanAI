@@ -67,6 +67,42 @@ class MeetingRoomSandboxApiTests(unittest.TestCase):
             ["employees", "meeting-rooms"],
         )
 
+    def test_date_schedule_returns_every_floor_and_half_hour_slots(self):
+        response = self.client.get(
+            "/api/sandbox/meeting-rooms",
+            params={"date": "2026/07/28"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        result = response.json()
+        self.assertEqual(len(result["rooms"]), 8)
+        self.assertEqual(
+            {room["floor"] for room in result["rooms"]},
+            {"5F", "7F", "12F"},
+        )
+        self.assertTrue(
+            all(len(room["timeline"]) == 18 for room in result["rooms"])
+        )
+        room_707 = next(
+            room for room in result["rooms"]
+            if room["roomId"] == "room-707"
+        )
+        self.assertEqual(
+            [
+                slot["timeRange"]
+                for slot in room_707["timeline"]
+                if not slot["available"]
+            ],
+            ["09:00-09:30", "09:30-10:00"],
+        )
+
+    def test_meeting_room_page_is_read_only_schedule_browser(self):
+        page = self.client.get("/meeting-room-sandbox")
+
+        self.assertIn("只读沙箱", page.text)
+        self.assertIn("09:00–18:00", page.text)
+        self.assertNotIn("确认并写入预约", page.text)
+
     def test_booking_persists_and_is_visible_in_next_room_query(self):
         created = self.client.post(
             "/api/sandbox/meeting-room-bookings",

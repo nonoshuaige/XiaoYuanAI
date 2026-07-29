@@ -85,10 +85,12 @@ class MeetingRoomToolTests(unittest.TestCase):
             ["queryMeetingRooms", "bookMeetingRoom"],
         )
         self.assertIn("用户选择会议室只代表选中候选", skill.instructions)
+        self.assertIn("不要求用户必须先提供楼层", skill.instructions)
+        self.assertIn("suggestedTimeRanges", skill.instructions)
         self.assertIn("confirmed才可设为true", skill.instructions)
         self.assertIn("重新查询会议室并检查冲突", skill.instructions)
 
-    def test_timed_tool_query_filters_conflicts_and_defaults_capacity(self):
+    def test_timed_tool_query_keeps_conflicts_and_suggests_alternatives(self):
         query_tool, _ = create_meeting_room_tools(
             SandboxMeetingRoomClient(self.store)
         )
@@ -105,17 +107,59 @@ class MeetingRoomToolTests(unittest.TestCase):
 
         self.assertEqual(result["capacity"], 5)
         self.assertEqual(
-            {room["roomId"] for room in result["rooms"]},
+            {
+                room["roomId"]
+                for room in result["rooms"]
+                if room["available"]
+            },
             {"room-708", "room-711"},
         )
+        room_707 = next(
+            room for room in result["rooms"]
+            if room["roomId"] == "room-707"
+        )
+        self.assertFalse(room_707["available"])
+        self.assertIn("10:00-10:30", room_707["suggestedTimeRanges"])
 
-    def test_query_rejects_partial_date_and_time(self):
+    def test_date_only_query_returns_all_floors_and_half_hour_timeline(self):
+        query_tool, _ = create_meeting_room_tools(
+            SandboxMeetingRoomClient(self.store)
+        )
+
+        result = json.loads(
+            query_tool.invoke({"date": "2026/07/28"})
+        )
+
+        self.assertEqual(len(result["rooms"]), 8)
+        self.assertEqual(result["scheduleWindow"], "09:00-18:00")
+        self.assertEqual(result["slotMinutes"], 30)
+        self.assertTrue(
+            all(len(room["timeline"]) == 18 for room in result["rooms"])
+        )
+
+    def test_room_only_query_finds_room_without_floor(self):
+        query_tool, _ = create_meeting_room_tools(
+            SandboxMeetingRoomClient(self.store)
+        )
+
+        result = json.loads(query_tool.invoke({"room": "707"}))
+
+        self.assertEqual(
+            [room["roomId"] for room in result["rooms"]],
+            ["room-707"],
+        )
+        self.assertEqual(
+            result["rooms"][0]["availableTimeRanges"],
+            ["10:00-18:00"],
+        )
+
+    def test_query_requires_at_least_one_clue(self):
         query_tool, _ = create_meeting_room_tools(
             SandboxMeetingRoomClient(self.store)
         )
 
         with self.assertRaises(ValidationError):
-            query_tool.invoke({"floor": "7", "date": "2026/07/28"})
+            query_tool.invoke({})
 
     def test_booking_requeries_before_create_and_returns_real_ids(self):
         tracking_client = TrackingMeetingRoomClient(self.store)

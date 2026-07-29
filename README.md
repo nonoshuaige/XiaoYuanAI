@@ -14,8 +14,8 @@
 |---|---|
 | Agent 运行时 | LangChain `create_agent`，按实际注册 Tool 动态生成能力提示 |
 | 找人工具 | 工号 > 手机号 > 姓名优先级查询，部门辅助过滤，重名候选消歧 |
-| 会议室工具 | 沙箱内按楼层/日期/时段/人数查询，确认后重查冲突并预约 |
-| 会议室验证台 | 原生 JavaScript 渲染会议室状态、日程、确认交互和服务端预约凭证 |
+| 会议室 Skill | 可从楼层、房间、日期或时段任一线索查询，确认后重查冲突并预约 |
+| 会议室日程沙箱 | 原生 JavaScript 按日期、楼层和房间展示 09:00–18:00 半小时日程 |
 | 上下文管理 | 固定系统规则 + 用户层历史摘要 + 未覆盖原文 + 当前问题 |
 | 长对话压缩 | 30/20/10 滚动摘要，后台异步生成，保留全量原文 |
 | 会话管理 | 新建、切换、自动命名、重命名、删除、多会话隔离 |
@@ -178,10 +178,10 @@ AgentRuntime
 每次操作都会立即写入当前沙箱 SQLite 数据库。沙箱仅在数据库文件首次创建时写入
 初始虚构数据，因此页面修改和删除（包括删除全部员工）在服务重启后仍会保留。
 
-会议室页面可直接访问 <http://127.0.0.1:8000/meeting-room-sandbox>，支持按楼层、
-日期、时间和人数查看会议室状态。预约必须在确认窗口中明确勾选确认；成功后页面展示
-服务端生成的 `bookingId` 和 `meetingId`，并从数据库重新读取日程，因此结果不依赖
-AI 或前端自行宣称。
+会议室页面可直接访问 <http://127.0.0.1:8000/meeting-room-sandbox>。页面是只读
+日程沙箱：顶部选择日期，下方按楼层展示全部会议室；点击房间可查看 09:00–18:00、
+每半小时一段的真实预约状态。页面不创建预约，Agent 的预约结果仍以服务端 Tool
+写入及 `/create` 适配器返回为准。
 
 员工沙箱 API：
 
@@ -202,7 +202,8 @@ Agent 始终注册：
 - `find_person` Tool：按工号、手机号或姓名查询员工。
 - `meeting-room-booking` Skill：集中管理会议室参数收集、相对日期解析、查询、
   候选选择、明确确认和预约结果校验。
-  - `queryMeetingRooms` Tool：只有楼层时返回整层会议室；日期和时间同时提供时筛选。
+  - `queryMeetingRooms` Tool：楼层、房间、日期或时间任一线索都可发起查询；返回
+    09:00–18:00 半小时日程、可用时段以及与所问时长相同的候选时间。
   - `bookMeetingRoom` Tool：必须明确确认，创建前重新查询；冲突时不会创建预约。
 
 ## 上下文管理
@@ -231,7 +232,8 @@ HumanMessage
 
 当前时间上下文在每轮模型调用前重新生成，不写入聊天历史。它用于把用户明确说出的
 “今天”“明天”“后天”等相对日期换算为会议室接口需要的 `yyyy/MM/dd`；不会用来
-猜测用户没有提供的楼层、预约时段或确认状态。
+猜测用户没有提供的预约参数。用户只说时间时可跨楼层查询，只说房间时可查看该房间
+日程；真正预约仍要求具体房间、日期、时段和明确确认。
 
 ### 权限边界
 
@@ -470,7 +472,7 @@ ollama pull qwen3.5:9b
 ├── static/
 │   ├── index.html           # 原生 Web 聊天界面
 │   ├── employee-sandbox.html # 员工沙箱 CRUD 页面
-│   ├── meeting-room-sandbox.html # 会议室状态与预约页面
+│   ├── meeting-room-sandbox.html # 会议室只读日程页面
 │   ├── meeting-room-sandbox.css  # 会议室页面视觉样式
 │   └── meeting-room-sandbox.js   # 会议室页面原生 JavaScript 交互逻辑
 ├── tests/
@@ -478,7 +480,7 @@ ollama pull qwen3.5:9b
 │   ├── test_people_tool.py  # 找人优先级、消歧、校验和 Tool 输出测试
 │   ├── test_employee_sandbox_api.py # 员工沙箱页面与 CRUD API 测试
 │   ├── test_meeting_room_tool.py # 会议室查询、确认、重查与冲突测试
-│   ├── test_meeting_room_sandbox_api.py # 会议室页面和预约 API 测试
+│   ├── test_meeting_room_sandbox_api.py # 会议室只读页面和沙箱 API 测试
 │   ├── test_sandbox.py      # 虚构数据幂等写入与沙箱数据库隔离测试
 │   ├── test_config.py       # Provider、模型目录和模型选择测试
 │   └── test_model_audit.py  # Provider 原始响应与 AIMessage 序列化测试
@@ -523,4 +525,4 @@ python -m unittest discover -s tests -v
 
 ## 版本
 
-当前版本：**1.5 会议室查询、预约 Tool 与可验证沙箱**
+当前版本：**1.5 会议室查询、预约 Skill 与只读日程沙箱**

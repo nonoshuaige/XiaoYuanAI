@@ -186,7 +186,8 @@ async def delete_sandbox_person(employee_id: str):
 
 @app.get("/api/sandbox/meeting-rooms")
 async def list_sandbox_meeting_rooms(
-    floor: str = Query(pattern=r"^\d+$"),
+    floor: str | None = Query(default=None, pattern=r"^\d+$"),
+    room: str | None = Query(default=None, min_length=1, max_length=80),
     date: str | None = Query(
         default=None,
         pattern=r"^\d{4}/\d{2}/\d{2}$",
@@ -204,6 +205,7 @@ async def list_sandbox_meeting_rooms(
         return await run_in_threadpool(
             meeting_room_store.list_rooms,
             floor=floor,
+            room_query=room,
             date=date,
             time_range=time_range,
             capacity=capacity,

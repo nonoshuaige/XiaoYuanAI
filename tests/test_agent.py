@@ -149,6 +149,15 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertNotIn("bookMeetingRoom", prompt_without_tools)
         self.assertIn("meeting-room-booking", prompt_with_tools)
         self.assertIn("`queryMeetingRooms`, `bookMeetingRoom`", prompt_with_tools)
+        self.assertIn(
+            "时间、楼层、房间名称/编号中的任一线索",
+            prompt_with_tools,
+        )
+        self.assertIn(
+            "用户只提供时间时，查询全部楼层",
+            prompt_with_tools,
+        )
+        self.assertIn("suggestedTimeRanges", prompt_with_tools)
         self.assertIn("用户选择会议室只代表选中候选", prompt_with_tools)
         self.assertIn("本轮服务端时间上下文", prompt_with_tools)
 

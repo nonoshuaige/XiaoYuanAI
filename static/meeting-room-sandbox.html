@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>会议室沙箱 · 小原 AI</title>
+  <title>会议室日程 · 小原 AI</title>
   <link rel="stylesheet" href="/static/meeting-room-sandbox.css">
 </head>
 <body>
@@ -12,239 +12,135 @@
     <a class="brand" href="/" aria-label="返回小原 AI 对话">
       <span class="brand-mark" aria-hidden="true">原</span>
       <span>
-        <strong>小原 AI</strong>
-        <small>会议室操作验证台</small>
+        <strong>会议室日程</strong>
+        <small>小原 AI · 只读沙箱</small>
       </span>
     </a>
-    <nav class="topbar-actions" aria-label="页面导航">
-      <a class="back-link" href="/">
-        <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-          <path d="m12.5 5-5 5 5 5" stroke="currentColor" stroke-width="1.7"
-            stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <span>返回对话</span>
-      </a>
-    </nav>
+    <a class="back-link" href="/">
+      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <path d="m12.5 5-5 5 5 5" stroke="currentColor" stroke-width="1.7"
+          stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span>返回对话</span>
+    </a>
   </header>
 
   <main class="workspace">
-    <section class="hero" aria-labelledby="pageTitle">
-      <div class="hero-copy">
-        <span class="eyebrow">SANDBOX · SQLITE VERIFIED</span>
-        <h1 id="pageTitle">看得见的会议室预约</h1>
-        <p>
-          查询、冲突校验和预约都由沙箱服务真实执行。成功记录会写入独立 SQLite，
-          并立即出现在下方日程中。
-        </p>
+    <section class="date-board" aria-labelledby="pageTitle">
+      <div class="title-block">
+        <span class="eyebrow">MEETING ROOM SCHEDULE</span>
+        <h1 id="pageTitle">选择一天，查看所有会议室</h1>
+        <p>按楼层浏览房间，点击任意房间查看 09:00–18:00 的半小时日程。</p>
       </div>
-      <div class="hero-proof" aria-label="沙箱连接状态">
-        <span class="live-dot" aria-hidden="true"></span>
-        <div>
-          <strong id="connectionStatus">正在连接沙箱</strong>
-          <small id="observedAt">等待服务端状态</small>
-        </div>
-      </div>
-    </section>
 
-    <section class="filter-panel" aria-label="会议室筛选条件">
-      <div class="floor-switcher">
-        <span class="control-label">楼层</span>
-        <div class="segmented" id="floorSwitcher" role="group" aria-label="选择楼层">
-          <button type="button" data-floor="5">5F</button>
-          <button type="button" class="active" data-floor="7">7F</button>
-          <button type="button" data-floor="12">12F</button>
-        </div>
-      </div>
-      <label class="field">
-        <span>日期</span>
-        <input id="filterDate" type="date">
-      </label>
-      <label class="field">
-        <span>开始时间</span>
-        <input id="filterStart" type="time" step="1800" value="09:00">
-      </label>
-      <label class="field">
-        <span>结束时间</span>
-        <input id="filterEnd" type="time" step="1800" value="10:00">
-      </label>
-      <label class="field compact">
-        <span>参会人数</span>
-        <input id="filterCapacity" type="number" min="1" max="500" value="5">
-      </label>
-      <div class="filter-actions">
-        <button class="clear-button" id="clearFiltersButton" type="button">
-          清空并显示全部
-        </button>
-        <button class="refresh-button" id="refreshButton" type="button">
+      <div class="date-picker" aria-label="选择日程日期">
+        <button class="icon-button" id="previousDay" type="button"
+          aria-label="前一天">
           <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-            <path d="M15.8 7.1A6.5 6.5 0 1 0 16.2 12M15.8 3.8v3.6h-3.6"
-              stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+            <path d="m12.5 5-5 5 5 5" stroke="currentColor"
+              stroke-width="1.7" stroke-linecap="round"
               stroke-linejoin="round"/>
           </svg>
-          查询
+        </button>
+        <label class="date-field">
+          <span>日期</span>
+          <input id="scheduleDate" type="date">
+        </label>
+        <button class="today-button" id="todayButton" type="button">今天</button>
+        <button class="icon-button" id="nextDay" type="button"
+          aria-label="后一天">
+          <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <path d="m7.5 5 5 5-5 5" stroke="currentColor"
+              stroke-width="1.7" stroke-linecap="round"
+              stroke-linejoin="round"/>
+          </svg>
         </button>
       </div>
     </section>
 
-    <section class="summary-strip" aria-label="会议室概览">
+    <section class="day-summary" aria-live="polite">
       <div>
-        <span>当前楼层</span>
-        <strong id="summaryFloor">7F</strong>
-      </div>
-      <div>
-        <span id="summaryAvailableLabel">符合时段</span>
-        <strong id="summaryAvailable">—</strong>
+        <span id="displayDate">正在读取日期</span>
+        <strong id="displayWeekday">—</strong>
       </div>
       <div>
-        <span>当前使用中</span>
-        <strong id="summaryOccupied">—</strong>
+        <span>楼层</span>
+        <strong id="floorCount">—</strong>
       </div>
-      <div class="summary-note">
-        <span>验证方式</span>
-        <strong>服务端落库后回读</strong>
+      <div>
+        <span>会议室</span>
+        <strong id="roomCount">—</strong>
       </div>
+      <div>
+        <span>日程范围</span>
+        <strong>09:00–18:00</strong>
+      </div>
+      <button class="refresh-button" id="refreshButton" type="button">
+        <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <path d="M15.8 7.1A6.5 6.5 0 1 0 16.2 12M15.8 3.8v3.6h-3.6"
+            stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+            stroke-linejoin="round"/>
+        </svg>
+        刷新
+      </button>
     </section>
 
-    <div class="content-grid">
-      <section class="rooms-section" aria-labelledby="roomsTitle">
-        <div class="section-heading">
-          <div>
-            <span class="section-kicker">ROOM AVAILABILITY</span>
-            <h2 id="roomsTitle">会议室与今日日程</h2>
-          </div>
-          <p id="queryDescription">正在读取会议室状态</p>
-        </div>
+    <section class="schedule-board" aria-label="各楼层会议室">
+      <div class="state-panel loading-state" id="loadingState">
+        <div class="skeleton-heading"></div>
+        <div class="skeleton-row"></div>
+        <div class="skeleton-row"></div>
+        <div class="skeleton-heading short"></div>
+        <div class="skeleton-row"></div>
+      </div>
 
-        <div class="state-panel loading-state" id="loadingState">
-          <div class="skeleton-line wide"></div>
-          <div class="skeleton-line"></div>
-          <div class="skeleton-card"></div>
-          <div class="skeleton-card"></div>
-        </div>
+      <div class="state-panel empty-state" id="emptyState" hidden>
+        <span class="state-mark" aria-hidden="true">0</span>
+        <h2>这一天没有会议室数据</h2>
+        <p>请选择其他日期，或确认沙箱数据已经初始化。</p>
+      </div>
 
-        <div class="state-panel empty-state" id="emptyState" hidden>
-          <span class="state-mark" aria-hidden="true">0</span>
-          <h3>这个楼层还没有会议室</h3>
-          <p>切换楼层，或检查沙箱种子数据是否已初始化。</p>
-        </div>
+      <div class="state-panel error-state" id="errorState" hidden>
+        <span class="state-mark" aria-hidden="true">!</span>
+        <h2>会议室日程读取失败</h2>
+        <p id="errorCopy">请确认会议室沙箱正在运行。</p>
+        <button type="button" id="retryButton">重新读取</button>
+      </div>
 
-        <div class="state-panel error-state" id="errorState" hidden>
-          <span class="state-mark" aria-hidden="true">!</span>
-          <h3>会议室状态读取失败</h3>
-          <p id="errorCopy">请确认会议室沙箱正在运行。</p>
-          <button type="button" id="retryButton">重新读取</button>
-        </div>
-
-        <div class="room-list" id="roomList" aria-live="polite" hidden></div>
-      </section>
-
-      <aside class="proof-panel" aria-labelledby="proofTitle">
-        <span class="section-kicker">SERVER RECEIPT</span>
-        <h2 id="proofTitle">预约凭证</h2>
-        <div class="receipt-empty" id="receiptEmpty">
-          <svg viewBox="0 0 48 48" fill="none" aria-hidden="true">
-            <rect x="8" y="7" width="32" height="34" rx="8"
-              stroke="currentColor" stroke-width="1.7"/>
-            <path d="M16 18h16M16 24h10M16 30h13"
-              stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-          </svg>
-          <p>完成一次预约后，这里会显示服务端返回的唯一凭证。</p>
-        </div>
-        <dl class="receipt" id="receipt" hidden>
-          <div>
-            <dt>状态</dt>
-            <dd class="receipt-success">已写入沙箱</dd>
-          </div>
-          <div>
-            <dt>会议室</dt>
-            <dd id="receiptRoom">—</dd>
-          </div>
-          <div>
-            <dt>日期 / 时间</dt>
-            <dd id="receiptSlot">—</dd>
-          </div>
-          <div>
-            <dt>Booking ID</dt>
-            <dd class="mono" id="receiptBookingId">—</dd>
-          </div>
-          <div>
-            <dt>Meeting ID</dt>
-            <dd class="mono" id="receiptMeetingId">—</dd>
-          </div>
-        </dl>
-        <div class="proof-footnote">
-          <span aria-hidden="true"></span>
-          凭证来自预约 API，不由 AI 或前端生成
-        </div>
-      </aside>
-    </div>
+      <div class="floor-list" id="floorList" hidden></div>
+    </section>
   </main>
 
-  <dialog class="booking-dialog" id="bookingDialog">
-    <form id="bookingForm">
-      <div class="dialog-heading">
+  <dialog class="room-dialog" id="roomDialog">
+    <div class="dialog-shell">
+      <header class="dialog-header">
         <div>
-          <span class="section-kicker">CONFIRM BOOKING</span>
-          <h2 id="dialogTitle">确认预约</h2>
-          <p id="dialogSubtitle">核对完整信息后写入会议室沙箱。</p>
+          <span class="dialog-floor" id="dialogFloor">—</span>
+          <h2 id="dialogRoomName">会议室日程</h2>
+          <p id="dialogRoomMeta">—</p>
         </div>
         <button class="dialog-close" id="closeDialog" type="button"
-          aria-label="关闭预约窗口">×</button>
-      </div>
+          aria-label="关闭房间日程">×</button>
+      </header>
 
-      <div class="selected-room">
-        <span class="selected-room-floor" id="dialogFloor">7F</span>
+      <div class="dialog-date">
         <div>
-          <strong id="dialogRoomName">—</strong>
-          <small id="dialogRoomMeta">—</small>
+          <span>日期</span>
+          <strong id="dialogDate">—</strong>
+        </div>
+        <div class="legend" aria-label="日程状态图例">
+          <span><i class="legend-dot available"></i>可用</span>
+          <span><i class="legend-dot occupied"></i>已预约</span>
         </div>
       </div>
 
-      <div class="form-grid">
-        <label class="field wide">
-          <span>会议主题</span>
-          <input id="bookingTheme" type="text" maxlength="100"
-            placeholder="例如：需求讨论" required>
-        </label>
-        <label class="field">
-          <span>日期</span>
-          <input id="bookingDate" type="date" required>
-        </label>
-        <label class="field">
-          <span>参会人数</span>
-          <input id="bookingCapacity" type="number" min="1" max="500" required>
-        </label>
-        <label class="field">
-          <span>开始时间</span>
-          <input id="bookingStart" type="time" step="1800" required>
-        </label>
-        <label class="field">
-          <span>结束时间</span>
-          <input id="bookingEnd" type="time" step="1800" required>
-        </label>
+      <div class="timeline-heading">
+        <span>时间</span>
+        <span>状态与会议</span>
       </div>
-
-      <label class="confirmation-check">
-        <input id="bookingConfirmed" type="checkbox">
-        <span>
-          <strong>我确认创建这条预约</strong>
-          <small>提交后会立即写入沙箱数据库，并影响会议室可用状态。</small>
-        </span>
-      </label>
-
-      <p class="form-error" id="bookingError" aria-live="polite"></p>
-      <div class="dialog-actions">
-        <button class="secondary-button" id="cancelBooking" type="button">
-          取消
-        </button>
-        <button class="primary-button" id="confirmBooking" type="submit" disabled>
-          确认并写入预约
-        </button>
-      </div>
-    </form>
+      <div class="timeline" id="timeline"></div>
+    </div>
   </dialog>
-
-  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
   <script type="module" src="/static/meeting-room-sandbox.js"></script>
 </body>

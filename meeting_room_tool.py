@@ -18,6 +18,9 @@ from conversation_store import DEFAULT_DB_PATH
 
 
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
+WORKDAY_START_MINUTES = 9 * 60
+WORKDAY_END_MINUTES = 18 * 60
+SLOT_MINUTES = 30
 
 SANDBOX_MEETING_ROOMS = (
     {
@@ -260,13 +263,19 @@ class MeetingRoomStore:
     def list_rooms(
         self,
         *,
-        floor: str,
+        floor: str | None = None,
+        room_query: str | None = None,
         date: str | None = None,
         time_range: str | None = None,
         capacity: int | None = None,
         available_only: bool = False,
     ) -> dict[str, Any]:
-        floor = _validate_floor(floor)
+        normalized_floor = _validate_floor(floor) if floor is not None else None
+        normalized_room_query = (
+            room_query.strip() if room_query is not None else None
+        )
+        if normalized_room_query == "":
+            normalized_room_query = None
         requested_date = (
             _validate_date(date)
             if date is not None
@@ -279,37 +288,54 @@ class MeetingRoomStore:
             raise MeetingRoomError("参会人数必须大于0")
 
         with self._connect() as connection:
+            conditions: list[str] = []
+            parameters: list[Any] = []
+            if normalized_floor is not None:
+                conditions.append("floor = ?")
+                parameters.append(normalized_floor)
+            if normalized_room_query is not None:
+                conditions.append(
+                    "(room_id LIKE ? OR room_name LIKE ?)"
+                )
+                contains_room = f"%{normalized_room_query}%"
+                parameters.extend((contains_room, contains_room))
+            where_clause = (
+                f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            )
             rooms = connection.execute(
-                """
+                f"""
                 SELECT room_id, room_name, floor, capacity, equipment_json
                 FROM meeting_rooms
-                WHERE floor = ?
-                ORDER BY room_name
+                {where_clause}
+                ORDER BY CAST(floor AS INTEGER), room_name
                 """,
-                (floor,),
+                parameters,
             ).fetchall()
-            bookings = connection.execute(
-                """
-                SELECT
-                    booking_id,
-                    meeting_id,
-                    room_id,
-                    start_time,
-                    end_time,
-                    capacity,
-                    theme,
-                    booked_by,
-                    source,
-                    created_at
-                FROM meeting_room_bookings
-                WHERE booking_date = ?
-                    AND room_id IN (
-                        SELECT room_id FROM meeting_rooms WHERE floor = ?
-                    )
-                ORDER BY start_time, room_id
-                """,
-                (requested_date, floor),
-            ).fetchall()
+            room_ids = [room["room_id"] for room in rooms]
+            if room_ids:
+                placeholders = ", ".join("?" for _ in room_ids)
+                bookings = connection.execute(
+                    f"""
+                    SELECT
+                        booking_id,
+                        meeting_id,
+                        room_id,
+                        start_time,
+                        end_time,
+                        capacity,
+                        theme,
+                        booked_by,
+                        source,
+                        created_at
+                    FROM meeting_room_bookings
+                    WHERE booking_date = ?
+                        AND room_id IN ({placeholders})
+                    ORDER BY start_time, room_id
+                    """,
+                    (requested_date, *room_ids),
+                ).fetchall()
+            else:
+                bookings = []
 
         bookings_by_room: dict[str, list[sqlite3.Row]] = {}
         for booking in bookings:
@@ -339,6 +365,21 @@ class MeetingRoomStore:
             available = slot_available and capacity_available
             if available_only and not available:
                 continue
+            timeline = _build_half_hour_timeline(
+                room_bookings,
+                capacity_available=capacity_available,
+            )
+            available_time_ranges = _merge_available_slots(timeline)
+            suggested_time_ranges = (
+                _matching_duration_ranges(
+                    timeline,
+                    duration_minutes=_range_duration_minutes(
+                        requested_slot
+                    ),
+                )
+                if requested_slot is not None
+                else available_time_ranges
+            )
             current_booking = next(
                 (
                     booking
@@ -368,6 +409,9 @@ class MeetingRoomStore:
                     "occupied": [
                         _booking_dict(booking) for booking in room_bookings
                     ],
+                    "timeline": timeline,
+                    "availableTimeRanges": available_time_ranges,
+                    "suggestedTimeRanges": suggested_time_ranges,
                 }
             )
 
@@ -378,6 +422,14 @@ class MeetingRoomStore:
             "date": requested_date,
             "timeRange": time_range,
             "capacity": capacity,
+            "floor": (
+                f"{normalized_floor}F"
+                if normalized_floor is not None
+                else None
+            ),
+            "roomQuery": normalized_room_query,
+            "scheduleWindow": "09:00-18:00",
+            "slotMinutes": SLOT_MINUTES,
             "rooms": result_rooms,
         }
 
@@ -491,7 +543,8 @@ class MeetingRoomClient(Protocol):
     def select_meet(
         self,
         *,
-        floor: str,
+        floor: str | None = None,
+        room_query: str | None = None,
         date: str | None = None,
         time_range: str | None = None,
         capacity: int | None = None,
@@ -524,7 +577,14 @@ class SandboxMeetingRoomClient:
 
 
 class QueryMeetingRoomsInput(BaseModel):
-    floor: str = Field(description="楼层，纯数字，例如7")
+    floor: str | None = Field(
+        default=None,
+        description="楼层，纯数字，例如7",
+    )
+    room: str | None = Field(
+        default=None,
+        description="会议室名称、编号或roomId，例如707或room-707",
+    )
     date: str | None = Field(
         default=None,
         description="日期，格式yyyy/MM/dd",
@@ -541,12 +601,18 @@ class QueryMeetingRoomsInput(BaseModel):
 
     @model_validator(mode="after")
     def validate_query(self) -> "QueryMeetingRoomsInput":
-        self.floor = _validate_floor(self.floor)
-        if (self.date is None) != (self.timeRange is None):
-            raise ValueError("date和timeRange必须同时提供")
+        if self.floor is not None:
+            self.floor = _validate_floor(self.floor)
+        if self.room is not None:
+            self.room = self.room.strip() or None
         if self.date is not None:
             self.date = _validate_date(self.date)
-            _parse_time_range(self.timeRange or "")
+        if self.timeRange is not None:
+            _parse_time_range(self.timeRange)
+        if not any(
+            (self.floor, self.room, self.date, self.timeRange)
+        ):
+            raise ValueError("floor、room、date或timeRange至少提供一项")
         return self
 
 
@@ -589,24 +655,26 @@ def create_meeting_room_tools(
         "queryMeetingRooms",
         args_schema=QueryMeetingRoomsInput,
         description=(
-            "查询指定楼层的会议室。floor必填；只有floor时返回该楼层全部会议室；"
-            "同时提供date和timeRange时返回指定时段可用会议室；capacity可选，"
-            "时间查询时默认5人。本工具只查询，不创建预约。不要猜测参数。"
+            "按楼层、房间、日期或时间任一线索查询会议室。返回真实占用信息、"
+            "09:00-18:00半小时时间轴、连续空闲时段和适合所问时长的候选时间。"
+            "capacity可选，时间查询时默认5人。本工具只查询，不创建预约。"
         ),
     )
     def query_meeting_rooms(
-        floor: str,
+        floor: str | None = None,
+        room: str | None = None,
         date: str | None = None,
         timeRange: str | None = None,
         capacity: int | None = None,
     ) -> str:
-        timed_query = date is not None and timeRange is not None
+        timed_query = timeRange is not None
         result = client.select_meet(
             floor=floor,
+            room_query=room,
             date=date,
             time_range=timeRange,
             capacity=(capacity or 5) if timed_query else None,
-            available_only=timed_query,
+            available_only=False,
         )
         return json.dumps(result, ensure_ascii=False)
 
@@ -736,3 +804,105 @@ def _booking_dict(booking: sqlite3.Row) -> dict[str, Any]:
         "source": booking["source"],
         "createdAt": booking["created_at"],
     }
+
+
+def _build_half_hour_timeline(
+    bookings: list[sqlite3.Row],
+    *,
+    capacity_available: bool,
+) -> list[dict[str, Any]]:
+    timeline: list[dict[str, Any]] = []
+    for start_minutes in range(
+        WORKDAY_START_MINUTES,
+        WORKDAY_END_MINUTES,
+        SLOT_MINUTES,
+    ):
+        end_minutes = start_minutes + SLOT_MINUTES
+        start_time = _minutes_to_time(start_minutes)
+        end_time = _minutes_to_time(end_minutes)
+        booking = next(
+            (
+                candidate
+                for candidate in bookings
+                if _overlaps(
+                    start_time,
+                    end_time,
+                    candidate["start_time"],
+                    candidate["end_time"],
+                )
+            ),
+            None,
+        )
+        available = capacity_available and booking is None
+        timeline.append(
+            {
+                "start": start_time,
+                "end": end_time,
+                "timeRange": f"{start_time}-{end_time}",
+                "available": available,
+                "status": (
+                    "available"
+                    if available
+                    else ("occupied" if booking is not None else "capacity")
+                ),
+                "booking": (
+                    _booking_dict(booking) if booking is not None else None
+                ),
+            }
+        )
+    return timeline
+
+
+def _merge_available_slots(
+    timeline: list[dict[str, Any]],
+) -> list[str]:
+    ranges: list[str] = []
+    range_start: str | None = None
+    for slot in timeline:
+        if slot["available"] and range_start is None:
+            range_start = slot["start"]
+        if not slot["available"] and range_start is not None:
+            ranges.append(f"{range_start}-{slot['start']}")
+            range_start = None
+    if range_start is not None:
+        ranges.append(
+            f"{range_start}-{_minutes_to_time(WORKDAY_END_MINUTES)}"
+        )
+    return ranges
+
+
+def _matching_duration_ranges(
+    timeline: list[dict[str, Any]],
+    *,
+    duration_minutes: int,
+) -> list[str]:
+    slots_needed = max(
+        1,
+        (duration_minutes + SLOT_MINUTES - 1) // SLOT_MINUTES,
+    )
+    matches: list[str] = []
+    for index in range(0, len(timeline) - slots_needed + 1):
+        window = timeline[index:index + slots_needed]
+        if all(slot["available"] for slot in window):
+            matches.append(
+                f"{window[0]['start']}-{window[-1]['end']}"
+            )
+    return matches
+
+
+def _range_duration_minutes(
+    requested_slot: tuple[str, str],
+) -> int:
+    return (
+        _time_to_minutes(requested_slot[1])
+        - _time_to_minutes(requested_slot[0])
+    )
+
+
+def _time_to_minutes(value: str) -> int:
+    hours, minutes = value.split(":")
+    return int(hours) * 60 + int(minutes)
+
+
+def _minutes_to_time(value: int) -> str:
+    return f"{value // 60:02d}:{value % 60:02d}"
