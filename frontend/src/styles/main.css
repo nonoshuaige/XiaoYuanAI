@@ -1340,7 +1340,8 @@ a {
   white-space: nowrap;
 }
 
-.model-select {
+.model-picker {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1349,29 +1350,130 @@ a {
   font-weight: 700;
 }
 
-.model-select-control {
-  min-width: 210px;
+.model-picker-trigger {
+  min-width: 230px;
   height: 42px;
   padding: 0 10px 0 13px;
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   border: 1px solid var(--line);
   border-radius: 11px;
   color: var(--ink);
   background: var(--surface);
   box-shadow: var(--shadow-sm);
+  text-align: left;
 }
 
-.model-select-control select {
+.model-picker-trigger > span {
   min-width: 0;
+  display: grid;
+  gap: 1px;
   flex: 1;
-  border: 0;
-  outline: 0;
-  color: inherit;
-  background: transparent;
-  appearance: none;
+}
+
+.model-picker-trigger small {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.model-picker-trigger strong {
+  overflow: hidden;
   font-size: 12px;
   font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-picker-trigger svg {
+  flex: none;
+  transition: transform 160ms var(--ease-out);
+}
+
+.model-picker-trigger svg.rotated {
+  transform: rotate(180deg);
+}
+
+.model-picker-menu {
+  width: min(520px, calc(100vw - 28px));
+  min-height: 260px;
+  max-height: min(540px, calc(100dvh - 110px));
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 80;
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.model-provider-list,
+.model-option-list {
+  min-height: 0;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.model-provider-list {
+  border-right: 1px solid var(--line);
+  background: var(--surface-soft);
+}
+
+.model-provider-list button,
+.model-option-list button {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 9px;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+}
+
+.model-provider-list button span,
+.model-option-list button span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-provider-list button small,
+.model-option-list button small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.model-provider-list button:hover,
+.model-provider-list button.active,
+.model-option-list button:hover {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.model-option-list > p {
+  margin: 5px 8px 7px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.model-option-list button.selected {
+  color: #fff;
+  background: var(--accent);
 }
 
 .message-viewport {
@@ -1466,8 +1568,8 @@ a {
 }
 
 .message-bubble.artifact-only {
-  width: min(780px, 100%);
-  max-width: min(780px, 100%);
+  width: min(620px, 100%);
+  max-width: min(620px, 100%);
   padding: 0;
   border: 0;
   background: transparent;
@@ -1617,6 +1719,7 @@ a {
 
 /* Booking confirmation card */
 .booking-card {
+  width: 100%;
   overflow: hidden;
   border: 1px solid #bdd4cb;
   border-radius: 16px;
@@ -1733,6 +1836,22 @@ a {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.booking-actions button {
+  min-width: 118px;
+}
+
+.artifact-notice {
+  margin: 0 0 9px;
+  padding: 9px 11px;
+  border: 1px solid #e6cf9b;
+  border-radius: 10px;
+  color: #76511f;
+  background: #fff8e8;
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: normal;
 }
 
 .quick-replies {
@@ -1974,13 +2093,17 @@ a {
     font-size: 15px;
   }
 
-  .model-select > span:first-child {
+  .model-picker-label {
     display: none;
   }
 
-  .model-select-control {
-    min-width: 140px;
+  .model-picker-trigger {
+    min-width: 150px;
     max-width: 42vw;
+  }
+
+  .model-picker-menu {
+    grid-template-columns: 140px minmax(0, 1fr);
   }
 
   .message-viewport {

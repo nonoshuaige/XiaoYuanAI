@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import {
   PhBuildings as Buildings,
-  PhCaretDown as CaretDown,
   PhChatCircleDots as ChatCircleDots,
   PhList as List,
   PhPencilSimple as PencilSimple,
@@ -16,6 +15,7 @@ import AppBrand from '@/components/AppBrand.vue'
 import BaseDialog from '@/components/BaseDialog.vue'
 import BookingDraftCard from '@/components/BookingDraftCard.vue'
 import MarkdownContent from '@/components/MarkdownContent.vue'
+import ModelPicker from '@/components/ModelPicker.vue'
 import { useChatStore } from '@/stores/chat'
 import type { SessionSummary } from '@/types/api'
 
@@ -29,29 +29,24 @@ const renameError = ref('')
 const deleteTarget = ref<SessionSummary | null>(null)
 const deleting = ref(false)
 const deleteError = ref('')
-const latestAssistantKey = computed(
-  () => [...store.messages].reverse().find((message) => message.role === 'assistant')?.key ?? null,
-)
-
-const modelGroups = computed(() => {
-  const groups = new Map<string, { label: string; models: typeof store.models }>()
-  store.models.forEach((model) => {
-    const group = groups.get(model.providerId) ?? { label: model.provider, models: [] }
-    group.models.push(model)
-    groups.set(model.providerId, group)
-  })
-  return [...groups.entries()]
+const latestMessageRenderState = computed(() => {
+  const message = store.messages.at(-1)
+  if (!message) return ''
+  return [
+    message.key,
+    message.content,
+    message.status,
+    message.quickReplies.join('\u0000'),
+    message.artifacts.map((artifact) => `${artifact.draftId}:${artifact.status}`).join('\u0000'),
+  ].join('\u0001')
 })
 
-watch(
-  () => store.messages.length,
-  async () => {
-    await nextTick()
-    if (messageViewport.value) {
-      messageViewport.value.scrollTop = messageViewport.value.scrollHeight
-    }
-  },
-)
+watch(latestMessageRenderState, async () => {
+  await nextTick()
+  if (messageViewport.value) {
+    messageViewport.value.scrollTop = messageViewport.value.scrollHeight
+  }
+})
 
 function openRename(session: SessionSummary) {
   renameId.value = session.sessionId
@@ -105,6 +100,10 @@ function handleComposerKeydown(event: KeyboardEvent) {
     event.preventDefault()
     void submit()
   }
+}
+
+function quickRepliesAreActionable(messageIndex: number) {
+  return !store.messages.slice(messageIndex + 1).some((message) => message.role === 'user')
 }
 
 onMounted(() => void store.initialize())
@@ -217,23 +216,12 @@ onMounted(() => void store.initialize())
           <span class="eyebrow">CURRENT CONVERSATION</span>
           <h1>{{ store.title }}</h1>
         </div>
-        <label class="model-select">
-          <span>模型</span>
-          <span class="model-select-control">
-            <select
-              :value="store.selectedModelId ?? ''"
-              :disabled="store.sending || !store.models.length"
-              @change="store.selectModel(($event.target as HTMLSelectElement).value)"
-            >
-              <optgroup v-for="[id, group] in modelGroups" :key="id" :label="group.label">
-                <option v-for="model in group.models" :key="model.id" :value="model.id">
-                  {{ model.label }}
-                </option>
-              </optgroup>
-            </select>
-            <CaretDown :size="15" aria-hidden="true" />
-          </span>
-        </label>
+        <ModelPicker
+          :models="store.models"
+          :selected-id="store.selectedModelId"
+          :disabled="store.sending || !store.models.length"
+          @select="store.selectModel"
+        />
       </header>
 
       <section ref="messageViewport" class="message-viewport" aria-live="polite">
@@ -259,14 +247,20 @@ onMounted(() => void store.initialize())
         </div>
 
         <article
-          v-for="message in store.messages"
+          v-for="(message, messageIndex) in store.messages"
           :key="message.key"
           class="message-row"
           :class="[message.role, { failed: message.status === 'failed' }]"
         >
           <div class="message-bubble" :class="{ 'artifact-only': message.artifacts.length }">
             <template v-if="message.role === 'assistant'">
-              <MarkdownContent v-if="message.content.trim()" :content="message.content" />
+              <MarkdownContent
+                v-if="!message.artifacts.length && message.content.trim()"
+                :content="message.content"
+              />
+              <p v-else-if="message.content.trim().startsWith('此前还有')" class="artifact-notice">
+                {{ message.content }}
+              </p>
               <BookingDraftCard
                 v-for="draft in message.artifacts"
                 :key="draft.draftId"
@@ -274,11 +268,7 @@ onMounted(() => void store.initialize())
                 @updated="store.updateArtifact(message.key, $event)"
               />
               <div
-                v-if="
-                  message.key === latestAssistantKey &&
-                  message.quickReplies.length &&
-                  !message.artifacts.length
-                "
+                v-if="message.quickReplies.length && !message.artifacts.length"
                 class="quick-replies"
                 aria-label="快捷回答"
               >
@@ -286,7 +276,7 @@ onMounted(() => void store.initialize())
                   v-for="reply in message.quickReplies"
                   :key="reply"
                   type="button"
-                  :disabled="store.sending"
+                  :disabled="store.sending || !quickRepliesAreActionable(messageIndex)"
                   @click="store.send(reply)"
                 >
                   {{ reply }}

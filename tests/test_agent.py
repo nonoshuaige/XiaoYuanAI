@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import threading
 import unittest
@@ -10,10 +11,19 @@ from langchain_core.language_models.fake_chat_models import (
     FakeMessagesListChatModel,
 )
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from pydantic import PrivateAttr
 
-from agent import AgentRuntime
+from agent import (
+    AgentRuntime,
+    _meeting_room_quick_replies,
+    _strip_stale_draft_reminders,
+)
 from conversation_store import ConversationStore
 from people_tool import PeopleStore, create_find_person_tool
 from prompts import (
@@ -309,6 +319,53 @@ class AgentRuntimeTests(unittest.TestCase):
             ["星河 802", "天际 801"],
         )
         self.assertNotIn("quick-replies", stored["content"])
+
+    def test_meeting_room_quick_replies_are_derived_from_real_tool_result(self):
+        tool_result = {
+            "success": True,
+            "rooms": [
+                {
+                    "roomId": f"room-{number}",
+                    "roomName": name,
+                    "available": True,
+                    "suggestedTimeRanges": [],
+                }
+                for number, name in (
+                    ("801", "天际 801"),
+                    ("802", "星河 802"),
+                    ("806", "远景 806"),
+                    ("708", "云杉 708"),
+                    ("711", "远望 711"),
+                )
+            ],
+        }
+        message = ToolMessage(
+            content=json.dumps(tool_result, ensure_ascii=False),
+            tool_call_id="query-1",
+            name="queryMeetingRooms",
+        )
+
+        replies = _meeting_room_quick_replies(
+            [message],
+            "建议在星河 802和远景 806中选择一个。",
+        )
+
+        self.assertEqual(
+            replies,
+            ("选择星河 802", "选择远景 806"),
+        )
+
+    def test_stale_booking_reminder_is_removed_when_no_pending_draft(self):
+        reply = (
+            "预约已经确认成功。\n\n"
+            "另外提醒：您之前已生成的预约草稿（星河802，明天10:00-11:00）"
+            "仍在有效期内，可在卡片中直接确认或取消。"
+        )
+
+        self.assertEqual(
+            _strip_stale_draft_reminders(reply),
+            "预约已经确认成功。",
+        )
 
     def test_text_only_booking_card_claim_is_retried(self):
         model = RecordingFakeChatModel(

@@ -3,7 +3,6 @@ import {
   PhArrowsClockwise as ArrowsClockwise,
   PhCalendarBlank as CalendarBlank,
   PhCheckCircle as CheckCircle,
-  PhFloppyDisk as FloppyDisk,
   PhXCircle as XCircle,
   PhWarningCircle as WarningCircle,
 } from '@phosphor-icons/vue'
@@ -32,7 +31,7 @@ const form = reactive({
   theme: props.draft.theme,
 })
 const roomOptions = ref<MeetingRoom[]>([])
-const feedback = ref('检查参数后由你本人确认，模型无法代替点击。')
+const feedback = ref('可直接修改参数，然后保存并预约；也可以取消这张草稿。')
 const feedbackError = ref(false)
 const busy = ref(false)
 const refreshing = ref(false)
@@ -152,15 +151,14 @@ async function refreshRooms() {
   }
 }
 
-async function save(silent = false): Promise<BookingDraft> {
+async function save(): Promise<BookingDraft> {
   feedbackError.value = false
-  feedback.value = silent ? '正在校验并准备确认…' : '正在保存并校验…'
+  feedback.value = '正在保存并校验预约参数…'
   busy.value = true
   try {
     const updated = await api.updateBookingDraft(current.value.draftId, payload())
     applyDraft(updated)
     emit('updated', updated)
-    if (!silent) feedback.value = '修改已保存，可以继续确认预约。'
     return updated
   } catch (error) {
     feedbackError.value = true
@@ -173,7 +171,7 @@ async function save(silent = false): Promise<BookingDraft> {
 
 async function confirm() {
   try {
-    await save(true)
+    await save()
     busy.value = true
     feedback.value = '正在创建真实预约…'
     const result = await api.confirmBookingDraft(current.value.draftId)
@@ -328,15 +326,11 @@ onBeforeUnmount(() => {
       <div v-if="!locked" class="booking-actions">
         <button class="secondary-button" type="button" :disabled="busy" @click="cancel">
           <XCircle :size="17" aria-hidden="true" />
-          取消草稿
-        </button>
-        <button class="secondary-button" type="button" :disabled="busy" @click="save(false)">
-          <FloppyDisk :size="17" aria-hidden="true" />
-          保存修改
+          取消
         </button>
         <button class="primary-button" type="button" :disabled="busy" @click="confirm">
           <CheckCircle :size="18" weight="bold" aria-hidden="true" />
-          确认预约
+          保存并预约
         </button>
       </div>
     </div>

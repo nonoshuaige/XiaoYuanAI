@@ -288,9 +288,9 @@ class MeetingRoomSandboxApiTests(unittest.TestCase):
 
         self.assertEqual(page.status_code, 200)
         self.assertIn("booking-card", source)
-        self.assertIn("保存修改", source)
-        self.assertIn("确认预约", source)
-        self.assertIn("取消草稿", source)
+        self.assertNotIn("保存修改", source)
+        self.assertIn("保存并预约", source)
+        self.assertIn("取消", source)
         self.assertIn("cancelBookingDraft", source)
         self.assertIn("confirmBookingDraft", source)
         self.assertIn("is-confirmed", source)
