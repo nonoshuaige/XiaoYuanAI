@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -295,6 +295,27 @@ class MeetingRoomToolTests(unittest.TestCase):
         self.assertTrue(confirmed["success"])
         self.assertEqual(confirmed["bookingId"], repeated["bookingId"])
         self.assertEqual(confirmed["draft"]["status"], "confirmed")
+
+    def test_unconfirmed_draft_expires_after_thirty_minutes(self):
+        clock = [FIXED_NOW]
+        store = MeetingRoomStore(
+            Path(self.temp_dir.name) / "expiring-draft.db",
+            now_factory=lambda: clock[0],
+        )
+        draft = store.create_draft(
+            room_id="room-711",
+            floor="7",
+            date="2026/07/29",
+            time_range="16:00-17:00",
+        )
+        self.assertEqual(draft["status"], "pending")
+
+        clock[0] += timedelta(minutes=30)
+        expired = store.get_draft(draft["draftId"])
+
+        self.assertEqual(expired["status"], "expired")
+        with self.assertRaisesRegex(ValueError, "已失效"):
+            store.confirm_draft(draft["draftId"])
 
     def test_store_rejects_past_outside_workday_and_non_half_hour(self):
         invalid_slots = (

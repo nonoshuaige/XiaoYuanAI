@@ -578,6 +578,17 @@
       font-weight: 760;
     }
     .booking-card-title svg { width: 21px; height: 21px; flex: 0 0 auto; }
+    .booking-head-state {
+      display: grid;
+      justify-items: end;
+      gap: 6px;
+    }
+    .booking-countdown {
+      color: #766837;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
     .booking-status {
       padding: 4px 9px;
       border-radius: 999px;
@@ -689,6 +700,18 @@
       color: #0d6b4f;
       font-weight: 680;
     }
+    .booking-card.is-expired {
+      border-color: #ddb2b8;
+      background: linear-gradient(145deg, #fffdfd, #fbebed);
+      box-shadow: 0 14px 35px rgba(151, 53, 67, .1);
+    }
+    .booking-card.is-expired .booking-card-head {
+      border-bottom-color: #efd2d6;
+      background: rgba(255, 245, 246, .82);
+    }
+    .booking-card.is-expired .booking-card-title,
+    .booking-card.is-expired .booking-feedback,
+    .booking-card.is-expired .booking-countdown { color: #913847; }
     .bubble.artifact-only {
       padding: 0;
       border: 0;
@@ -1361,6 +1384,10 @@
   }
 
   function renderBookingCard(host, draft) {
+    if (host.bookingCountdownTimer) {
+      clearInterval(host.bookingCountdownTimer);
+      host.bookingCountdownTimer = null;
+    }
     host.replaceChildren();
     const card = document.createElement("section");
     card.className = "booking-card";
@@ -1372,16 +1399,22 @@
     const title = document.createElement("div");
     title.className = "booking-card-title";
     title.append(bookingCalendarIcon(), document.createTextNode("会议室预约"));
+    const headState = document.createElement("div");
+    headState.className = "booking-head-state";
+    const countdown = document.createElement("span");
+    countdown.className = "booking-countdown";
+    countdown.setAttribute("aria-label", "预约卡片剩余有效时间");
     const status = document.createElement("span");
     const statusText = {
       pending: "等待你确认",
       confirmed: "预约成功",
-      expired: "已过期",
+      expired: "已失效",
       cancelled: "已取消",
     };
     status.className = `booking-status ${draft.status || "pending"}`;
     status.textContent = statusText[draft.status] || "等待你确认";
-    head.append(title, status);
+    headState.append(countdown, status);
+    head.append(title, headState);
 
     const body = document.createElement("div");
     body.className = "booking-card-body";
@@ -1478,10 +1511,11 @@
       save.disabled = true;
       confirm.disabled = true;
       actions.hidden = true;
+      refresh.hidden = true;
     }
     if (draft.status === "confirmed") {
       card.classList.add("is-confirmed");
-      refresh.hidden = true;
+      countdown.textContent = "已完成确认";
       const proof = document.createElement("div");
       proof.className = "booking-proof";
       proof.textContent =
@@ -1489,8 +1523,72 @@
         `${draft.date} ${draft.timeRange}`;
       body.insertBefore(proof, actions);
       feedback.textContent = "预约已由服务端真实写入。";
+    } else if (draft.status === "expired") {
+      card.classList.add("is-expired");
+      countdown.textContent = "30 分钟确认期限已结束";
+      feedback.textContent = "预约单已自动销毁，请重新发起预约。";
     } else if (locked) {
+      countdown.textContent = "确认期限已结束";
       feedback.textContent = "该卡片已失效，请在对话中重新发起预约。";
+    }
+
+    let expiryRefreshInFlight = false;
+    let nextExpiryRefreshAt = 0;
+    async function refreshExpiredDraft() {
+      if (
+        expiryRefreshInFlight
+        || Date.now() < nextExpiryRefreshAt
+        || draft.status !== "pending"
+      ) {
+        return;
+      }
+      expiryRefreshInFlight = true;
+      try {
+        const latest = await api(
+          `/api/meeting-room-booking-drafts/${draft.draftId}`
+        );
+        if (latest.status !== "pending") {
+          renderBookingCard(host, latest);
+          return;
+        }
+        nextExpiryRefreshAt = Date.now() + 5_000;
+      } catch (error) {
+        feedback.classList.add("error");
+        feedback.textContent = `失效状态同步失败：${error.message}`;
+        nextExpiryRefreshAt = Date.now() + 5_000;
+      } finally {
+        expiryRefreshInFlight = false;
+      }
+    }
+
+    function updateCountdown() {
+      if (!host.isConnected && host.bookingCountdownTimer) {
+        clearInterval(host.bookingCountdownTimer);
+        host.bookingCountdownTimer = null;
+        return;
+      }
+      const expiresAt = Date.parse(draft.expiresAt);
+      if (!Number.isFinite(expiresAt)) {
+        countdown.textContent = "有效期 30 分钟";
+        return;
+      }
+      const secondsRemaining = Math.max(
+        0,
+        Math.ceil((expiresAt - Date.now()) / 1_000)
+      );
+      const minutes = String(Math.floor(secondsRemaining / 60)).padStart(2, "0");
+      const seconds = String(secondsRemaining % 60).padStart(2, "0");
+      countdown.textContent = secondsRemaining
+        ? `剩余 ${minutes}:${seconds}`
+        : "正在同步失效状态…";
+      if (secondsRemaining === 0) {
+        void refreshExpiredDraft();
+      }
+    }
+
+    if (draft.status === "pending") {
+      updateCountdown();
+      host.bookingCountdownTimer = setInterval(updateCountdown, 1_000);
     }
 
     async function saveDraft({silent = false} = {}) {

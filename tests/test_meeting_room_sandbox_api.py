@@ -252,6 +252,9 @@ class MeetingRoomSandboxApiTests(unittest.TestCase):
         self.assertIn("artifact-only", page.text)
         self.assertIn("actions.hidden = true", page.text)
         self.assertIn("is-confirmed", page.text)
+        self.assertIn("booking-countdown", page.text)
+        self.assertIn("is-expired", page.text)
+        self.assertIn("预约单已自动销毁", page.text)
 
 
 if __name__ == "__main__":
