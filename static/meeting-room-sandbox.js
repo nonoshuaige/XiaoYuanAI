@@ -25,6 +25,7 @@ const displayDate = select("#displayDate");
 const displayWeekday = select("#displayWeekday");
 const floorCount = select("#floorCount");
 const roomCount = select("#roomCount");
+const scheduleWindow = select("#scheduleWindow");
 const loadingState = select("#loadingState");
 const emptyState = select("#emptyState");
 const errorState = select("#errorState");
@@ -156,6 +157,7 @@ function renderSummary(result) {
         `${weekdayName(scheduleDate.value)} · ${formatObservedAt(result.observedAt)} 更新`;
     floorCount.textContent = `${floors.size} 层`;
     roomCount.textContent = `${result.rooms.length} 间`;
+    scheduleWindow.textContent = result.displayWindow.replace("-", "–");
 }
 
 function renderFloors(rooms) {
@@ -245,7 +247,11 @@ function createRoomRow(room) {
     });
     const axis = document.createElement("div");
     axis.className = "mini-axis";
-    axis.innerHTML = "<span>09:00</span><span>12:00</span><span>15:00</span><span>18:00</span>";
+    timelineAxisLabels(room.timeline).forEach((label) => {
+        const marker = document.createElement("span");
+        marker.textContent = label;
+        axis.appendChild(marker);
+    });
     preview.append(track, axis);
 
     const freeSlots = room.timeline.filter((slot) => slot.available).length;
@@ -256,7 +262,7 @@ function createRoomRow(room) {
     const statusNote = document.createElement("span");
     statusNote.textContent = room.occupied.length
         ? `${room.occupied.length} 条预约`
-        : "全天无预约";
+        : "当前展示时段无预约";
     status.append(statusValue, statusNote);
 
     const chevron = document.createElementNS(
@@ -271,6 +277,23 @@ function createRoomRow(room) {
     button.append(identity, preview, status, chevron);
     button.addEventListener("click", () => openRoomDialog(room));
     return button;
+}
+
+function timelineAxisLabels(slots) {
+    if (!slots.length) {
+        return ["18:00"];
+    }
+    const indexes = [
+        0,
+        Math.floor(slots.length / 3),
+        Math.floor(slots.length * 2 / 3),
+    ];
+    return [
+        ...new Set([
+            ...indexes.map((index) => slots[index].start),
+            slots.at(-1).end,
+        ]),
+    ];
 }
 
 function openRoomDialog(room) {

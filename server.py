@@ -17,6 +17,7 @@ from agent import get_context, get_runtime, reset_session
 from config import get_model_options
 from conversation_store import conversation_store
 from meeting_room_tool import (
+    DEFAULT_MEETING_CAPACITY,
     MeetingRoomConflictError,
     MeetingRoomDraftNotFoundError,
     MeetingRoomDraftStateError,
@@ -87,7 +88,11 @@ class MeetingRoomBookingRequest(BaseModel):
         pattern=r"^\d{2}:\d{2}-\d{2}:\d{2}$",
     )
     confirmed: Literal[True]
-    capacity: int = Field(default=5, ge=1, le=500)
+    capacity: int = Field(
+        default=DEFAULT_MEETING_CAPACITY,
+        ge=1,
+        le=500,
+    )
     theme: str | None = Field(default=None, max_length=100)
 
 
@@ -104,7 +109,11 @@ class MeetingRoomDraftUpdateRequest(BaseModel):
         alias="timeRange",
         pattern=r"^\d{2}:\d{2}-\d{2}:\d{2}$",
     )
-    capacity: int = Field(default=5, ge=1, le=500)
+    capacity: int = Field(
+        default=DEFAULT_MEETING_CAPACITY,
+        ge=1,
+        le=500,
+    )
     theme: str | None = Field(default=None, max_length=100)
 
 
@@ -372,7 +381,11 @@ async def meeting_room_booking_draft_options(
         alias="timeRange",
         pattern=r"^\d{2}:\d{2}-\d{2}:\d{2}$",
     ),
-    capacity: int = Query(default=5, ge=1, le=500),
+    capacity: int = Query(
+        default=DEFAULT_MEETING_CAPACITY,
+        ge=1,
+        le=500,
+    ),
 ):
     try:
         await run_in_threadpool(meeting_room_store.get_draft, draft_id)

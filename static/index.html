@@ -676,6 +676,26 @@
     .booking-card.is-locked input,
     .booking-card.is-locked select,
     .booking-card.is-locked button { opacity: .7; }
+    .booking-card.is-confirmed {
+      border-color: #8bc8b2;
+      background: linear-gradient(145deg, #fbfffd, #eaf8f2);
+      box-shadow: 0 14px 35px rgba(20, 125, 88, .12);
+    }
+    .booking-card.is-confirmed .booking-card-head {
+      border-bottom-color: #c9e8dc;
+      background: rgba(234, 248, 242, .76);
+    }
+    .booking-card.is-confirmed .booking-feedback {
+      color: #0d6b4f;
+      font-weight: 680;
+    }
+    .bubble.artifact-only {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+    .bubble.artifact-only .booking-card { margin-top: 0; }
     .composer {
       padding: 15px 26px 20px;
       border-top: 1px solid var(--line);
@@ -1457,8 +1477,11 @@
       refresh.disabled = true;
       save.disabled = true;
       confirm.disabled = true;
+      actions.hidden = true;
     }
     if (draft.status === "confirmed") {
+      card.classList.add("is-confirmed");
+      refresh.hidden = true;
       const proof = document.createElement("div");
       proof.className = "booking-proof";
       proof.textContent =
@@ -1560,16 +1583,23 @@
 
   function renderMessageContent(bubble, text, role, artifacts = []) {
     bubble.replaceChildren();
+    const bookingArtifacts = artifacts.filter(
+      artifact => artifact.type === "meetingRoomBookingDraft"
+    );
+    bubble.classList.toggle(
+      "artifact-only",
+      role === "assistant" && bookingArtifacts.length > 0
+    );
     if (role === "assistant") {
-      bubble.appendChild(renderMarkdown(text));
-      artifacts
-        .filter(artifact => artifact.type === "meetingRoomBookingDraft")
-        .forEach(artifact => {
-          const host = document.createElement("div");
-          host.className = "booking-card-host";
-          bubble.appendChild(host);
-          renderBookingCard(host, artifact);
-        });
+      if (!bookingArtifacts.length) {
+        bubble.appendChild(renderMarkdown(text));
+      }
+      bookingArtifacts.forEach(artifact => {
+        const host = document.createElement("div");
+        host.className = "booking-card-host";
+        bubble.appendChild(host);
+        renderBookingCard(host, artifact);
+      });
     } else {
       bubble.textContent = text;
     }

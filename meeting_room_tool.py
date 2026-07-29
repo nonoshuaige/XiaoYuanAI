@@ -22,6 +22,7 @@ SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 WORKDAY_START_MINUTES = 9 * 60
 WORKDAY_END_MINUTES = 18 * 60
 SLOT_MINUTES = 30
+DEFAULT_MEETING_CAPACITY = 5
 DRAFT_EXPIRY_MINUTES = 30
 _booking_draft_context: ContextVar[tuple[str, int] | None] = ContextVar(
     "meeting_room_booking_draft_context",
@@ -407,9 +408,20 @@ class MeetingRoomStore:
         now = self._now_factory()
         current_time = now.strftime("%H:%M")
         is_today = requested_date == now.strftime("%Y/%m/%d")
+        display_start_minutes = (
+            _current_slot_start_minutes(now)
+            if is_today
+            else WORKDAY_START_MINUTES
+        )
+        display_start_time = _minutes_to_time(display_start_minutes)
         result_rooms = []
         for room in rooms:
             room_bookings = bookings_by_room.get(room["room_id"], [])
+            visible_bookings = [
+                booking
+                for booking in room_bookings
+                if booking["end_time"] > display_start_time
+            ]
             slot_available = (
                 requested_slot is None
                 or not any(
@@ -429,8 +441,9 @@ class MeetingRoomStore:
             if available_only and not available:
                 continue
             timeline = _build_half_hour_timeline(
-                room_bookings,
+                visible_bookings,
                 capacity_available=capacity_available,
+                start_minutes=display_start_minutes,
             )
             available_time_ranges = _merge_available_slots(timeline)
             suggested_time_ranges = (
@@ -470,7 +483,8 @@ class MeetingRoomStore:
                         else None
                     ),
                     "occupied": [
-                        _booking_dict(booking) for booking in room_bookings
+                        _booking_dict(booking)
+                        for booking in visible_bookings
                     ],
                     "timeline": timeline,
                     "availableTimeRanges": available_time_ranges,
@@ -492,6 +506,10 @@ class MeetingRoomStore:
             ),
             "roomQuery": normalized_room_query,
             "scheduleWindow": "09:00-18:00",
+            "displayWindow": (
+                f"{display_start_time}-"
+                f"{_minutes_to_time(WORKDAY_END_MINUTES)}"
+            ),
             "slotMinutes": SLOT_MINUTES,
             "rooms": result_rooms,
         }
@@ -503,7 +521,7 @@ class MeetingRoomStore:
         floor: str,
         date: str,
         time_range: str,
-        capacity: int = 5,
+        capacity: int = DEFAULT_MEETING_CAPACITY,
         theme: str | None = None,
         booked_by: str = "沙箱访客",
     ) -> dict[str, Any]:
@@ -614,7 +632,7 @@ class MeetingRoomStore:
         floor: str,
         date: str,
         time_range: str,
-        capacity: int = 5,
+        capacity: int = DEFAULT_MEETING_CAPACITY,
         theme: str | None = None,
         booked_by: str = "沙箱访客",
         session_id: str | None = None,
@@ -1165,7 +1183,9 @@ def create_meeting_room_tools(
             room_query=room,
             date=date,
             time_range=timeRange,
-            capacity=(capacity or 5) if timed_query else None,
+            capacity=(
+                capacity or DEFAULT_MEETING_CAPACITY
+            ) if timed_query else None,
             available_only=False,
         )
         return json.dumps(result, ensure_ascii=False)
@@ -1187,7 +1207,7 @@ def create_meeting_room_tools(
         capacity: int | None = None,
         theme: str | None = None,
     ) -> str:
-        actual_capacity = capacity or 5
+        actual_capacity = capacity or DEFAULT_MEETING_CAPACITY
         latest = client.select_meet(
             floor=floor,
             date=date,
@@ -1341,15 +1361,16 @@ def _build_half_hour_timeline(
     bookings: list[sqlite3.Row],
     *,
     capacity_available: bool,
+    start_minutes: int = WORKDAY_START_MINUTES,
 ) -> list[dict[str, Any]]:
     timeline: list[dict[str, Any]] = []
-    for start_minutes in range(
-        WORKDAY_START_MINUTES,
+    for slot_start_minutes in range(
+        start_minutes,
         WORKDAY_END_MINUTES,
         SLOT_MINUTES,
     ):
-        end_minutes = start_minutes + SLOT_MINUTES
-        start_time = _minutes_to_time(start_minutes)
+        end_minutes = slot_start_minutes + SLOT_MINUTES
+        start_time = _minutes_to_time(slot_start_minutes)
         end_time = _minutes_to_time(end_minutes)
         booking = next(
             (
@@ -1382,6 +1403,20 @@ def _build_half_hour_timeline(
             }
         )
     return timeline
+
+
+def _current_slot_start_minutes(now: datetime) -> int:
+    localized_now = (
+        now.replace(tzinfo=SHANGHAI_TIMEZONE)
+        if now.tzinfo is None
+        else now.astimezone(SHANGHAI_TIMEZONE)
+    )
+    current_minutes = localized_now.hour * 60 + localized_now.minute
+    rounded_down = current_minutes - current_minutes % SLOT_MINUTES
+    return min(
+        WORKDAY_END_MINUTES,
+        max(WORKDAY_START_MINUTES, rounded_down),
+    )
 
 
 def _merge_available_slots(

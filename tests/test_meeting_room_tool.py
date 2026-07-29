@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from meeting_room_tool import (
+    DEFAULT_MEETING_CAPACITY,
     MeetingRoomConflictError,
     MeetingRoomStore,
     SandboxMeetingRoomClient,
@@ -111,7 +112,7 @@ class MeetingRoomToolTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(result["capacity"], 5)
+        self.assertEqual(result["capacity"], DEFAULT_MEETING_CAPACITY)
         self.assertEqual(
             {
                 room["roomId"]
@@ -125,7 +126,7 @@ class MeetingRoomToolTests(unittest.TestCase):
             if room["roomId"] == "room-707"
         )
         self.assertFalse(room_707["available"])
-        self.assertIn("10:00-10:30", room_707["suggestedTimeRanges"])
+        self.assertIn("13:30-14:00", room_707["suggestedTimeRanges"])
 
     def test_date_only_query_returns_all_floors_and_half_hour_timeline(self):
         query_tool, _ = create_meeting_room_tools(
@@ -138,9 +139,10 @@ class MeetingRoomToolTests(unittest.TestCase):
 
         self.assertEqual(len(result["rooms"]), 9)
         self.assertEqual(result["scheduleWindow"], "09:00-18:00")
+        self.assertEqual(result["displayWindow"], "13:30-18:00")
         self.assertEqual(result["slotMinutes"], 30)
         self.assertTrue(
-            all(len(room["timeline"]) == 18 for room in result["rooms"])
+            all(len(room["timeline"]) == 9 for room in result["rooms"])
         )
 
     def test_room_only_query_finds_room_without_floor(self):
@@ -156,8 +158,29 @@ class MeetingRoomToolTests(unittest.TestCase):
         )
         self.assertEqual(
             result["rooms"][0]["availableTimeRanges"],
-            ["10:00-18:00"],
+            ["13:30-18:00"],
         )
+
+    def test_today_timeline_starts_at_current_half_hour_slot(self):
+        cases = (
+            ("2026-07-28T10:29:00+08:00", "10:00-10:30"),
+            ("2026-07-28T10:30:00+08:00", "10:30-11:00"),
+        )
+        for index, (now_value, first_slot) in enumerate(cases):
+            with self.subTest(now=now_value):
+                store = MeetingRoomStore(
+                    Path(self.temp_dir.name) / f"slot-{index}.db",
+                    now_factory=lambda value=now_value: datetime.fromisoformat(
+                        value
+                    ),
+                )
+                result = store.list_rooms(
+                    room_query="707",
+                    date="2026/07/28",
+                )
+                room = result["rooms"][0]
+                self.assertEqual(room["timeline"][0]["timeRange"], first_slot)
+                self.assertEqual(room["occupied"], [])
 
     def test_query_requires_at_least_one_clue(self):
         query_tool, _ = create_meeting_room_tools(

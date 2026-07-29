@@ -169,6 +169,8 @@ class AgentRuntimeTests(unittest.TestCase):
         )
         self.assertIn("suggestedTimeRanges", prompt_with_tools)
         self.assertIn("生成待确认预约卡片", prompt_with_tools)
+        self.assertIn("当前半小时槽之前的历史预约不再复述", prompt_with_tools)
+        self.assertIn("不在普通回复中重复", prompt_with_tools)
         self.assertIn("本轮服务端时间上下文", prompt_with_tools)
         self.assertIn("不得推荐或提交", prompt_with_tools)
 

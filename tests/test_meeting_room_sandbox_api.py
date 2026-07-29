@@ -88,8 +88,9 @@ class MeetingRoomSandboxApiTests(unittest.TestCase):
             {"6F", "7F", "8F"},
         )
         self.assertTrue(
-            all(len(room["timeline"]) == 18 for room in result["rooms"])
+            all(len(room["timeline"]) == 9 for room in result["rooms"])
         )
+        self.assertEqual(result["displayWindow"], "13:30-18:00")
         room_707 = next(
             room for room in result["rooms"]
             if room["roomId"] == "room-707"
@@ -100,7 +101,7 @@ class MeetingRoomSandboxApiTests(unittest.TestCase):
                 for slot in room_707["timeline"]
                 if not slot["available"]
             ],
-            ["09:00-09:30", "09:30-10:00"],
+            [],
         )
 
     def test_meeting_room_page_is_read_only_schedule_browser(self):
@@ -248,6 +249,9 @@ class MeetingRoomSandboxApiTests(unittest.TestCase):
         self.assertIn("保存修改", page.text)
         self.assertIn("确认预约", page.text)
         self.assertIn("/confirm", page.text)
+        self.assertIn("artifact-only", page.text)
+        self.assertIn("actions.hidden = true", page.text)
+        self.assertIn("is-confirmed", page.text)
 
 
 if __name__ == "__main__":
