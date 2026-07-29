@@ -1,4 +1,4 @@
-# 小原 AI 助手 1.5
+# 小原 AI 助手 2.0
 
 小原 AI 助手是一个面向中文办公场景的单 Agent 对话应用。项目以稳定的多轮对话
 为核心，提供多会话管理、SQLite 全量持久化、滚动摘要、多模型发现与切换，以及
@@ -15,7 +15,7 @@
 | Agent 运行时 | LangChain `create_agent`，结构化 System Prompt，并为会议室 Skill 注入工作流约束 |
 | 找人工具 | 工号 > 手机号 > 姓名主查询，全部线索一致性校验，重名候选消歧 |
 | 会议室 Skill | 可从楼层、房间、日期或时段任一线索查询，确认后重查冲突并预约 |
-| 会议室日程沙箱 | 原生 JavaScript 按日期、楼层和房间展示 09:00–18:00 半小时日程 |
+| 会议室日程沙箱 | Vue 按日期、楼层和房间展示 09:00–18:00 半小时日程 |
 | 上下文管理 | 固定系统规则 + 用户层历史摘要 + 未覆盖原文 + 当前问题 |
 | 长对话压缩 | 30/20/10 滚动摘要，后台异步生成，保留全量原文 |
 | 会话管理 | 新建、切换、自动命名、重命名、删除、多会话隔离 |
@@ -25,7 +25,7 @@
 | 本地模型 | 自动发现本机 Ollama 模型，通过 OpenAI 兼容接口调用 |
 | 模型调用调试 | 对照保存 Provider 完整 HTTP 响应和 LangChain `AIMessage` |
 | 数据存储 | SQLite + WAL，聊天记录、轮次、模型调试记录、摘要版本永久保存 |
-| Web 服务 | FastAPI JSON API + 原生 HTML/CSS/JavaScript 交互页面 |
+| Web 服务 | FastAPI JSON API + Vue 3、Vite、TypeScript 单页应用 |
 
 ## 仓库定位
 
@@ -39,15 +39,26 @@
 
 ## 快速启动
 
-项目使用 Python 3.10+，推荐在独立虚拟环境中运行。
+项目使用 Python 3.10+ 和 Node.js 20.19+，推荐在独立虚拟环境中运行。首次启动先
+安装并构建 Vue 前端：
 
 ```bash
 conda activate agent-env
 pip install -r requirements.txt
+
+cd frontend
+npm install
+npm run build
+cd ..
+
 python server.py
 ```
 
 浏览器访问 <http://localhost:8000>。
+
+上述是日常运行/生产方式：`npm run build` 只需在首次安装或前端源码发生变化后执行；
+构建完成后，FastAPI 会直接提供 Vue 静态资源，因此平时只需要启动 `python server.py`，
+不需要额外常驻 Vite 进程。
 
 ### 模型配置
 
@@ -78,10 +89,13 @@ DEFAULT_MODEL_ID=qwen3-coder-plus
 ## 总体架构
 
 ```text
-浏览器
+浏览器中的 Vue SPA
   │
   ▼
-FastAPI API
+Vue Router + Pinia + 类型化 API 客户端
+  │
+  ▼
+FastAPI API 与前端构建产物
   │
   ├── 模型目录与 Provider 配置
   ├── 会话增删改查
@@ -422,18 +436,45 @@ ollama pull qwen3.5:9b
 `chat_messages` 使用 `(session_id, round_no, role)` 作为复合主键。摘要只影响模型
 上下文的构建方式，不会删除或改写完整聊天记录。
 
-## Web 页面
+## Vue 前端
 
-`static/index.html` 是不依赖前端框架的单页聊天界面，包含：
+前端源码位于 `frontend/`，使用 Vue 3、Vite、TypeScript、Vue Router 和 Pinia。
+三个原有页面被统一为一个 SPA，并保持原 URL：
+
+| URL | Vue 页面 |
+|---|---|
+| `/` | 对话、模型和会话管理 |
+| `/employee-sandbox` | 员工目录 CRUD |
+| `/meeting-room-sandbox` | 会议室只读日程 |
+
+聊天页面包含：
 
 - 虚拟“新对话”入口；
 - 会话列表、轮数和当前会话状态；
 - 会话切换、重命名和删除确认弹窗；
-- Provider → 模型二级选择器；桌面端悬浮 Provider 展开右侧模型菜单；
+- 按 Provider 分组的模型选择器；
 - 当前 session 和模型的 `localStorage` 记忆；
-- 服务端完整聊天记录恢复。
+- 服务端完整聊天记录恢复；
+- Markdown 安全渲染；
+- 可编辑、可过期、需要人工确认的会议室预约卡片。
 
 浏览器只保存当前 `sessionId` 和选中的 model ID，消息正文以 SQLite 为唯一来源。
+
+只有开发和调试 Vue 源码、需要热更新时，才需要让 FastAPI 与 Vite 两个进程同时运行。
+Vite 会把 `/api` 代理到 FastAPI：
+
+```bash
+# 终端一
+python server.py
+
+# 终端二
+cd frontend
+npm run dev
+```
+
+访问 <http://127.0.0.1:5173>。生产运行前执行 `npm run build`，FastAPI 会从
+`frontend/dist` 提供入口和带哈希的静态资源。可通过 `XIAOYUAN_FRONTEND_DIST`
+覆盖构建目录。
 
 ## API
 
@@ -492,12 +533,15 @@ ollama pull qwen3.5:9b
 ├── meeting_room_tool.py     # 会议室 SQLite、客户端适配器和两个 Agent Tool
 ├── server.py                # FastAPI 页面与 JSON API
 ├── sandbox.py               # 统一数据库迁移、虚构业务数据与沙箱入口
-├── static/
-│   ├── index.html           # 原生 Web 聊天界面
-│   ├── employee-sandbox.html # 员工沙箱 CRUD 页面
-│   ├── meeting-room-sandbox.html # 会议室只读日程页面
-│   ├── meeting-room-sandbox.css  # 会议室页面视觉样式
-│   └── meeting-room-sandbox.js   # 会议室页面原生 JavaScript 交互逻辑
+├── frontend/
+│   ├── src/api/             # 类型化 FastAPI 客户端
+│   ├── src/components/      # 品牌、弹窗、状态和预约卡片组件
+│   ├── src/router/          # 三个页面的客户端路由
+│   ├── src/stores/          # Pinia 聊天和会话状态
+│   ├── src/styles/          # 统一设计系统与响应式样式
+│   ├── src/views/           # 聊天、员工和会议室页面
+│   ├── package.json         # 前端依赖、构建和测试脚本
+│   └── vite.config.ts       # Vite 构建及开发代理
 ├── tests/
 │   ├── test_agent.py        # 会话、上下文、失败恢复、摘要和懒加载测试
 │   ├── test_people_tool.py  # 找人主查询、线索冲突、消歧和 Tool 输出测试
@@ -515,7 +559,15 @@ ollama pull qwen3.5:9b
 ## 测试
 
 ```bash
-python -m unittest discover -s tests -v
+# 后端与业务回归
+python -m pytest -q
+
+# 前端类型、代码规范、单测和生产构建
+cd frontend
+npm run type-check
+npm run lint
+npm run test
+npm run build
 ```
 
 当前测试覆盖：
@@ -532,6 +584,7 @@ python -m unittest discover -s tests -v
 - Provider 未配置时不出现在目录；
 - 模型实例和 Agent graph 按需加载并复用。
 - Ollama 模型自动发现、Provider 隔离和本地 OpenAI 兼容地址。
+- Vue API 错误归一化、日期边界和生产构建。
 
 ## 当前边界
 
@@ -548,4 +601,4 @@ python -m unittest discover -s tests -v
 
 ## 版本
 
-当前版本：**1.5 统一数据库、会议室 Skill 与业务沙箱入口**
+当前版本：**2.0 Vue 3 前端架构、统一设计系统与类型化 API**

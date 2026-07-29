@@ -22,7 +22,11 @@ class MeetingRoomSandboxApiTests(unittest.TestCase):
         self.original_mode = server.SANDBOX_MODE
         self.original_store = server.meeting_room_store
         self.original_conversation_store = server.conversation_store
+        self.original_frontend_index = server.FRONTEND_INDEX_PATH
         server.SANDBOX_MODE = True
+        server.FRONTEND_INDEX_PATH = (
+            server.PROJECT_DIR / "frontend" / "index.html"
+        )
         server.meeting_room_store = MeetingRoomStore(
             Path(self.temp_dir.name) / "meeting-room-sandbox.db",
             now_factory=lambda: FIXED_NOW,
@@ -37,6 +41,7 @@ class MeetingRoomSandboxApiTests(unittest.TestCase):
         server.SANDBOX_MODE = self.original_mode
         server.meeting_room_store = self.original_store
         server.conversation_store = self.original_conversation_store
+        server.FRONTEND_INDEX_PATH = self.original_frontend_index
         self.temp_dir.cleanup()
 
     def test_page_and_api_are_only_available_in_sandbox_mode(self):
@@ -106,10 +111,18 @@ class MeetingRoomSandboxApiTests(unittest.TestCase):
 
     def test_meeting_room_page_is_read_only_schedule_browser(self):
         page = self.client.get("/meeting-room-sandbox")
+        source = (
+            server.PROJECT_DIR
+            / "frontend"
+            / "src"
+            / "views"
+            / "MeetingRoomSandboxView.vue"
+        ).read_text(encoding="utf-8")
 
-        self.assertIn("只读沙箱", page.text)
-        self.assertIn("09:00–18:00", page.text)
-        self.assertNotIn("确认并写入预约", page.text)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("只读沙箱", source)
+        self.assertIn("09:00–18:00", source)
+        self.assertNotIn("确认并写入预约", source)
 
     def test_booking_persists_and_is_visible_in_next_room_query(self):
         created = self.client.post(
@@ -244,17 +257,23 @@ class MeetingRoomSandboxApiTests(unittest.TestCase):
 
     def test_chat_page_contains_editable_human_confirmation_card(self):
         page = self.client.get("/")
+        source = (
+            server.PROJECT_DIR
+            / "frontend"
+            / "src"
+            / "components"
+            / "BookingDraftCard.vue"
+        ).read_text(encoding="utf-8")
 
-        self.assertIn("booking-card", page.text)
-        self.assertIn("保存修改", page.text)
-        self.assertIn("确认预约", page.text)
-        self.assertIn("/confirm", page.text)
-        self.assertIn("artifact-only", page.text)
-        self.assertIn("actions.hidden = true", page.text)
-        self.assertIn("is-confirmed", page.text)
-        self.assertIn("booking-countdown", page.text)
-        self.assertIn("is-expired", page.text)
-        self.assertIn("预约单已自动销毁", page.text)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("booking-card", source)
+        self.assertIn("保存修改", source)
+        self.assertIn("确认预约", source)
+        self.assertIn("confirmBookingDraft", source)
+        self.assertIn("is-confirmed", source)
+        self.assertIn("booking-countdown", source)
+        self.assertIn("is-expired", source)
+        self.assertIn("30 分钟确认期限已结束", source)
 
 
 if __name__ == "__main__":

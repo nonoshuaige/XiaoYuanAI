@@ -15,7 +15,11 @@ class EmployeeSandboxApiTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.original_mode = server.SANDBOX_MODE
         self.original_store = server.people_store
+        self.original_frontend_index = server.FRONTEND_INDEX_PATH
         server.SANDBOX_MODE = True
+        server.FRONTEND_INDEX_PATH = (
+            server.PROJECT_DIR / "frontend" / "index.html"
+        )
         server.people_store = PeopleStore(
             Path(self.temp_dir.name) / "employee-sandbox.db"
         )
@@ -25,6 +29,7 @@ class EmployeeSandboxApiTests(unittest.TestCase):
         self.client.close()
         server.SANDBOX_MODE = self.original_mode
         server.people_store = self.original_store
+        server.FRONTEND_INDEX_PATH = self.original_frontend_index
         self.temp_dir.cleanup()
 
     def test_page_and_status_are_only_available_in_sandbox_mode(self):

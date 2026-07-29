@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Response
@@ -32,6 +33,16 @@ from people_tool import (
 )
 
 
+PROJECT_DIR = Path(__file__).resolve().parent
+FRONTEND_DIST_DIR = Path(
+    os.getenv("XIAOYUAN_FRONTEND_DIST", PROJECT_DIR / "frontend" / "dist")
+).expanduser()
+if not FRONTEND_DIST_DIR.is_absolute():
+    FRONTEND_DIST_DIR = (PROJECT_DIR / FRONTEND_DIST_DIR).resolve()
+FRONTEND_INDEX_PATH = FRONTEND_DIST_DIR / "index.html"
+FRONTEND_ASSETS_DIR = FRONTEND_DIST_DIR / "assets"
+FRONTEND_FAVICON_PATH = FRONTEND_DIST_DIR / "favicon.svg"
+
 app = FastAPI(title="小原 AI 助手")
 SANDBOX_MODE = os.getenv("XIAOYUAN_SANDBOX") == "1"
 people_store = PeopleStore()
@@ -42,7 +53,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount(
+    "/assets",
+    StaticFiles(directory=FRONTEND_ASSETS_DIR, check_dir=False),
+    name="frontend-assets",
+)
 
 
 class ChatRequest(BaseModel):
@@ -122,21 +137,40 @@ def _require_sandbox() -> None:
         raise HTTPException(status_code=404, detail="sandbox not enabled")
 
 
+def _frontend_page() -> FileResponse:
+    if not FRONTEND_INDEX_PATH.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "前端尚未构建，请先在 frontend 目录运行 "
+                "`npm install` 和 `npm run build`"
+            ),
+        )
+    return FileResponse(FRONTEND_INDEX_PATH)
+
+
 @app.get("/")
 async def index():
-    return FileResponse("static/index.html")
+    return _frontend_page()
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+async def favicon():
+    if not FRONTEND_FAVICON_PATH.is_file():
+        raise HTTPException(status_code=404, detail="favicon not built")
+    return FileResponse(FRONTEND_FAVICON_PATH, media_type="image/svg+xml")
 
 
 @app.get("/employee-sandbox")
 async def employee_sandbox_page():
     _require_sandbox()
-    return FileResponse("static/employee-sandbox.html")
+    return _frontend_page()
 
 
 @app.get("/meeting-room-sandbox")
 async def meeting_room_sandbox_page():
     _require_sandbox()
-    return FileResponse("static/meeting-room-sandbox.html")
+    return _frontend_page()
 
 
 @app.get("/api/sandbox/status")
