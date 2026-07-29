@@ -112,25 +112,31 @@ class AgentRuntimeTests(unittest.TestCase):
     def test_system_prompt_separates_general_and_tool_capabilities(self):
         prompt = build_system_prompt([])
 
-        self.assertIn("通用能力（模型直接完成，不调用工具）", prompt)
-        self.assertIn("当前已接入工具", prompt)
+        self.assertIn("不把这些通用能力描述成工具", prompt)
         self.assertIn("当前没有接入任何外部工具", prompt)
-        self.assertIn("这些是模型的通用语言与推理能力，不是工具", prompt)
-        self.assertNotIn("### 找人（`find_person`）", prompt)
+        self.assertIn("不展示工具名、参数或调用过程", prompt)
 
-    def test_system_prompt_only_lists_tools_registered_for_runtime(self):
+    def test_system_prompt_does_not_duplicate_bound_tool_description(self):
+        people_store = PeopleStore(Path(self.temp_dir.name) / "people.db")
+        find_person = create_find_person_tool(people_store)
+        prompt = build_system_prompt([find_person])
+
+        self.assertNotIn("当前没有接入任何外部工具", prompt)
+        self.assertNotIn(find_person.description, prompt)
+        self.assertIn("本轮实际提供的工具", prompt)
+
+    def test_system_prompt_handles_greetings_and_self_introductions(self):
         people_store = PeopleStore(Path(self.temp_dir.name) / "people.db")
         prompt = build_system_prompt(
             [create_find_person_tool(people_store)]
         )
 
-        self.assertIn("### 找人（`find_person`）", prompt)
-        self.assertIn("员工通讯录查询工具，不是模型的通用知识", prompt)
-        self.assertNotIn("当前没有接入任何外部工具", prompt)
-        self.assertLess(
-            prompt.index("## 通用能力（模型直接完成，不调用工具）"),
-            prompt.index("# 当前已接入技能与工具"),
-        )
+        self.assertIn("仅作普通问候时自然回应", prompt)
+        self.assertIn("仅作自我介绍时友好回应", prompt)
+        self.assertIn("姓名只是对话内容，不代表查询请求", prompt)
+        self.assertIn("不要暗示已经查询或没有查询到该用户", prompt)
+        self.assertIn("若还包含明确任务，则继续完成该任务", prompt)
+        self.assertIn("只有工具实际返回结果", prompt)
 
     def test_system_prompt_lists_meeting_tools_only_when_registered(self):
         meeting_store = MeetingRoomStore(

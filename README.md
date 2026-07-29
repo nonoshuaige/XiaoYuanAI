@@ -12,8 +12,8 @@
 
 | 模块 | 当前能力 |
 |---|---|
-| Agent 运行时 | LangChain `create_agent`，按实际注册 Tool 动态生成能力提示 |
-| 找人工具 | 工号 > 手机号 > 姓名优先级查询，部门辅助过滤，重名候选消歧 |
+| Agent 运行时 | LangChain `create_agent`，结构化 System Prompt，并为会议室 Skill 注入工作流约束 |
+| 找人工具 | 工号 > 手机号 > 姓名主查询，全部线索一致性校验，重名候选消歧 |
 | 会议室 Skill | 可从楼层、房间、日期或时段任一线索查询，确认后重查冲突并预约 |
 | 会议室日程沙箱 | 原生 JavaScript 按日期、楼层和房间展示 09:00–18:00 半小时日程 |
 | 上下文管理 | 固定系统规则 + 用户层历史摘要 + 未覆盖原文 + 当前问题 |
@@ -139,18 +139,22 @@ AgentRuntime
 | 手机号 | `phone` | 必填、唯一 |
 | 部门 | `department` | 必填 |
 
-用户至少需要明确提供工号、手机号或姓名中的一项。若同时提供多项，查询只选择最高
-优先级的字段：`工号 > 手机号 > 姓名`；部门可附加为精确过滤条件。工号、手机号、
-姓名均为精确匹配。姓名查询得到多人时，工具返回候选而不是擅自选择。
+用户至少需要明确提供工号、手机号或姓名中的一项。若同时提供多项，工具按
+`工号 > 手机号 > 姓名` 选择主查询字段，再用其余身份线索和部门校验结果；线索不一致
+时返回冲突状态，不返回某位员工。工号、手机号、姓名均为精确匹配。姓名查询得到多人时，
+工具返回候选而不是擅自选择。
 
 生产 Agent 首次初始化时会自动建表，但不会写入虚构员工。同步员工数据时可调用
 `PeopleStore.upsert(...)`；之后 Agent 即可查询同一数据库中的记录。
 
 ### 虚构业务沙箱
 
-仓库提供独立的 `data/sandbox.db` 沙箱，不会污染默认的
-`data/xiaoyuan.db`。运行以下命令会初始化虚构员工、9 间会议室和当日日程，并启动
-网页服务：
+沙箱模式与普通模式共用 `data/xiaoyuan.db`。它只控制聊天页左上角是否显示
+“员工沙箱”和“会议室沙箱”入口，以及对应页面/API 是否开放，不再切换整套数据库。
+员工、会议室、预约、会话、摘要和模型审计记录全部保存在同一个数据库中。
+
+运行以下命令会启用入口并启动网页服务；如果统一数据库是首次创建，还会幂等写入
+10 条虚构员工记录、6F/7F/8F 共 9 间会议室和当日示例日程：
 
 ```bash
 /Users/zypro/Desktop/pythonenv/envs/XiaoYuan/bin/python sandbox.py
@@ -168,15 +172,18 @@ AgentRuntime
 - `手机号 13800000004 是谁？`
 - `帮我找研发部的陈晨`
 - `帮我找张三`（会返回研发部和财务部两位候选）
-- `找工号 XY-S003、手机号 13800000001、姓名张三`（按工号优先）
+- `找工号 XY-S003、手机号 13800000001、姓名张三`（会提示线索冲突）
 
-沙箱仍会使用 `.env` 中配置的模型服务；仅 SQLite 数据与默认环境隔离。可通过
-`XIAOYUAN_DB_PATH` 为普通启动指定其他数据库。
+沙箱仍会使用 `.env` 中配置的模型服务。`XIAOYUAN_DB_PATH` 若已配置，会同时作用于
+普通模式和沙箱模式；`sandbox.py` 不会再覆盖它。升级后首次启动沙箱模式时，程序会
+将旧 `data/sandbox.db` 中的业务数据，以及旧 `data/meeting-room-demo.db` 中的
+会议室和预约，一次性安全合并到默认的 `data/xiaoyuan.db`。校验无冲突并记录迁移
+状态后，两个旧库都不再参与运行。
 
-启动后聊天页侧栏会同时显示“员工沙箱”和“会议室沙箱”两个入口。员工页面可直接访问
-<http://127.0.0.1:8000/employee-sandbox>，支持查看、搜索、新增、编辑和删除，
-每次操作都会立即写入当前沙箱 SQLite 数据库。沙箱仅在数据库文件首次创建时写入
-初始虚构数据，因此页面修改和删除（包括删除全部员工）在服务重启后仍会保留。
+启动后可从聊天页侧栏进入“员工沙箱”，也可以直接访问
+<http://127.0.0.1:8000/employee-sandbox>。页面支持查看、搜索、新增、编辑和删除，
+每次操作都会立即写入统一 SQLite 数据库的 `people` 表。仅在统一数据库文件首次创建
+时写入初始虚构数据，因此页面修改和删除（包括删除全部员工）在服务重启后仍会保留。
 
 会议室页面可直接访问 <http://127.0.0.1:8000/meeting-room-sandbox>。页面是只读
 日程沙箱：顶部选择日期，下方按楼层展示全部会议室；点击房间可查看 09:00–18:00、
@@ -215,7 +222,7 @@ SQLite 是持久化事实来源。每次聊天请求都会重新构建临时消�
 
 ```text
 SystemMessage
-  助手身份 + 通用能力 + 按实际注册生成的 Skill/Tool 能力与调用规则
+  助手身份 + 通用能力 + 全局工具边界 + 已注册 Skill 的工作流约束
 
 SystemMessage
   本轮服务端动态注入的 Asia/Shanghai 当前日期、时间与星期
@@ -237,8 +244,9 @@ HumanMessage
 
 ### 权限边界
 
-System Prompt 在代码中按实际注册的工具生成：通用语言与推理能力、已接入工具及其
-调用规则是相互独立的段落；未注册的工具不会出现在能力说明中。历史摘要不会拼接进
+System Prompt 保留通用语言与推理规则、全局工具边界，以及需要跨多个 Tool 协作的
+Skill 工作流约束。单个 Tool 的能力、调用条件和参数说明由 LangChain 随工具定义独立
+提供，不重复复制。未注册的工具不会出现在模型可用工具中。历史摘要不会拼接进
 System Prompt，也不能覆盖系统规则或成为外部操作授权。
 
 摘要模型使用独立的 `SUMMARY_SYSTEM_PROMPT` 生成压缩结果，但生成结果回到主 Agent
@@ -395,6 +403,10 @@ ollama pull qwen3.5:9b
 | `model_call_audits` | 调试用 model ID、Provider 原始响应、完整 `AIMessage` 和调用状态 |
 | `chat_messages` | 所有 user/assistant 原文 |
 | `conversation_summaries` | 累计摘要正文、覆盖范围和历史版本 |
+| `people` | 员工目录（工号、姓名、手机号、部门） |
+| `meeting_rooms` | 会议室 ID、名称、楼层、容量和设备 |
+| `meeting_room_bookings` | 预约日期、时段、主题、预约来源和创建时间 |
+| `app_metadata` | 一次性数据库迁移状态（需要时自动创建） |
 
 `chat_messages` 使用 `(session_id, round_no, role)` 作为复合主键。摘要只影响模型
 上下文的构建方式，不会删除或改写完整聊天记录。
@@ -468,7 +480,7 @@ ollama pull qwen3.5:9b
 ├── model_audit.py           # Provider HTTP 捕获与 AIMessage 完整序列化
 ├── meeting_room_tool.py     # 会议室 SQLite、客户端适配器和两个 Agent Tool
 ├── server.py                # FastAPI 页面与 JSON API
-├── sandbox.py               # 虚构员工、会议室数据与隔离沙箱启动入口
+├── sandbox.py               # 统一数据库迁移、虚构业务数据与沙箱入口
 ├── static/
 │   ├── index.html           # 原生 Web 聊天界面
 │   ├── employee-sandbox.html # 员工沙箱 CRUD 页面
@@ -477,11 +489,11 @@ ollama pull qwen3.5:9b
 │   └── meeting-room-sandbox.js   # 会议室页面原生 JavaScript 交互逻辑
 ├── tests/
 │   ├── test_agent.py        # 会话、上下文、失败恢复、摘要和懒加载测试
-│   ├── test_people_tool.py  # 找人优先级、消歧、校验和 Tool 输出测试
+│   ├── test_people_tool.py  # 找人主查询、线索冲突、消歧和 Tool 输出测试
 │   ├── test_employee_sandbox_api.py # 员工沙箱页面与 CRUD API 测试
 │   ├── test_meeting_room_tool.py # 会议室查询、确认、重查与冲突测试
 │   ├── test_meeting_room_sandbox_api.py # 会议室只读页面和沙箱 API 测试
-│   ├── test_sandbox.py      # 虚构数据幂等写入与沙箱数据库隔离测试
+│   ├── test_sandbox.py      # 虚构数据、旧库迁移与统一数据库测试
 │   ├── test_config.py       # Provider、模型目录和模型选择测试
 │   └── test_model_audit.py  # Provider 原始响应与 AIMessage 序列化测试
 ├── .env.example             # Provider 配置示例
@@ -525,4 +537,4 @@ python -m unittest discover -s tests -v
 
 ## 版本
 
-当前版本：**1.5 会议室查询、预约 Skill 与只读日程沙箱**
+当前版本：**1.5 统一数据库、会议室 Skill 与业务沙箱入口**
