@@ -151,14 +151,23 @@ AgentRuntime
 “员工沙箱”入口，以及员工管理页面/API 是否开放，不再切换整套数据库。员工目录作为
 独立的 `people` 表与会话、摘要和模型审计记录保存在同一个数据库中。
 
-运行以下命令会启用入口并启动网页服务；如果统一数据库是首次创建，还会幂等写入
-10 条虚构员工记录：
+正常模式启动在 8000 端口，聊天页不会显示员工沙箱入口：
 
 ```bash
-/Users/zypro/Desktop/pythonenv/envs/XiaoYuan/bin/python sandbox.py
+/Users/zypro/Desktop/pythonenv/envs/XiaoYuan/bin/python -m uvicorn \
+  server:app --host 127.0.0.1 --port 8000
 ```
 
-浏览器访问 <http://127.0.0.1:8000>。只初始化和验证数据、不启动服务：
+需要同时查看沙箱时，可另开终端在 8001 端口启动沙箱模式。它会显示员工沙箱入口；
+如果统一数据库是首次创建，还会幂等写入 10 条虚构员工记录：
+
+```bash
+/Users/zypro/Desktop/pythonenv/envs/XiaoYuan/bin/python sandbox.py --port 8001
+```
+
+此时正常模式访问 <http://127.0.0.1:8000>，沙箱模式访问
+<http://127.0.0.1:8001>，两者共同读写 `data/xiaoyuan.db`。只初始化和验证数据、
+不启动服务：
 
 ```bash
 /Users/zypro/Desktop/pythonenv/envs/XiaoYuan/bin/python sandbox.py --seed-only
