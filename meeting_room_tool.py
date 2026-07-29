@@ -6,7 +6,8 @@ import json
 import sqlite3
 import threading
 import uuid
-from datetime import datetime
+from contextvars import ContextVar, Token
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
@@ -21,6 +22,11 @@ SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 WORKDAY_START_MINUTES = 9 * 60
 WORKDAY_END_MINUTES = 18 * 60
 SLOT_MINUTES = 30
+DRAFT_EXPIRY_MINUTES = 30
+_booking_draft_context: ContextVar[tuple[str, int] | None] = ContextVar(
+    "meeting_room_booking_draft_context",
+    default=None,
+)
 
 SANDBOX_MEETING_ROOMS = (
     {
@@ -108,6 +114,23 @@ class MeetingRoomConflictError(MeetingRoomError):
     """The requested room overlaps an existing booking."""
 
 
+class MeetingRoomDraftNotFoundError(MeetingRoomError):
+    """The requested pending booking draft does not exist."""
+
+
+class MeetingRoomDraftStateError(MeetingRoomError):
+    """The requested draft can no longer be edited or confirmed."""
+
+
+def set_booking_draft_context(session_id: str, round_no: int) -> Token:
+    """Attach durable conversation ownership without exposing it to the LLM."""
+    return _booking_draft_context.set((session_id, round_no))
+
+
+def reset_booking_draft_context(token: Token) -> None:
+    _booking_draft_context.reset(token)
+
+
 class MeetingRoomStore:
     """SQLite repository shared by the sandbox UI and agent tools."""
 
@@ -174,6 +197,39 @@ class MeetingRoomStore:
                     start_time,
                     end_time
                 );
+
+                CREATE TABLE IF NOT EXISTS meeting_room_booking_drafts (
+                    draft_id TEXT PRIMARY KEY,
+                    session_id TEXT,
+                    round_no INTEGER,
+                    room_id TEXT NOT NULL,
+                    floor TEXT NOT NULL,
+                    booking_date TEXT NOT NULL,
+                    start_time TEXT NOT NULL,
+                    end_time TEXT NOT NULL,
+                    capacity INTEGER NOT NULL CHECK (capacity > 0),
+                    theme TEXT NOT NULL,
+                    booked_by TEXT NOT NULL,
+                    status TEXT NOT NULL
+                        CHECK (
+                            status IN (
+                                'pending',
+                                'confirmed',
+                                'cancelled',
+                                'expired'
+                            )
+                        ),
+                    booking_id TEXT,
+                    meeting_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    FOREIGN KEY (room_id) REFERENCES meeting_rooms(room_id)
+                        ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_meeting_room_drafts_session
+                ON meeting_room_booking_drafts(session_id, round_no, created_at);
                 """
             )
 
@@ -455,6 +511,12 @@ class MeetingRoomStore:
         floor = _validate_floor(floor)
         date = _validate_date(date)
         start_time, end_time = _parse_time_range(time_range)
+        _validate_bookable_slot(
+            date,
+            start_time,
+            end_time,
+            now=self._now_factory(),
+        )
         if not room_id:
             raise MeetingRoomError("会议室ID不能为空")
         if capacity < 1:
@@ -545,6 +607,411 @@ class MeetingRoomStore:
             "message": "会议室预约成功",
         }
 
+    def create_draft(
+        self,
+        *,
+        room_id: str,
+        floor: str,
+        date: str,
+        time_range: str,
+        capacity: int = 5,
+        theme: str | None = None,
+        booked_by: str = "沙箱访客",
+        session_id: str | None = None,
+        round_no: int | None = None,
+    ) -> dict[str, Any]:
+        """Create an editable proposal; this method never creates a booking."""
+        room_id = room_id.strip()
+        floor = _validate_floor(floor)
+        date = _validate_date(date)
+        start_time, end_time = _parse_time_range(time_range)
+        now = self._now_factory()
+        _validate_bookable_slot(date, start_time, end_time, now=now)
+        if not room_id:
+            raise MeetingRoomError("会议室ID不能为空")
+        if capacity < 1:
+            raise MeetingRoomError("参会人数必须大于0")
+        normalized_booked_by = booked_by.strip() or "沙箱访客"
+        normalized_theme = (
+            (theme or "").strip()
+            or f"{normalized_booked_by}预约的会议"
+        )
+        draft_id = uuid.uuid4().hex
+        created_at = now.isoformat(timespec="seconds")
+        expires_at = (
+            now + timedelta(minutes=DRAFT_EXPIRY_MINUTES)
+        ).isoformat(timespec="seconds")
+
+        with self._write_lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._validate_room_and_conflict(
+                connection,
+                room_id=room_id,
+                floor=floor,
+                date=date,
+                start_time=start_time,
+                end_time=end_time,
+                capacity=capacity,
+            )
+            connection.execute(
+                """
+                INSERT INTO meeting_room_booking_drafts(
+                    draft_id,
+                    session_id,
+                    round_no,
+                    room_id,
+                    floor,
+                    booking_date,
+                    start_time,
+                    end_time,
+                    capacity,
+                    theme,
+                    booked_by,
+                    status,
+                    booking_id,
+                    meeting_id,
+                    created_at,
+                    updated_at,
+                    expires_at
+                )
+                VALUES(
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    'pending', NULL, NULL, ?, ?, ?
+                )
+                """,
+                (
+                    draft_id,
+                    session_id,
+                    round_no,
+                    room_id,
+                    floor,
+                    date,
+                    start_time,
+                    end_time,
+                    capacity,
+                    normalized_theme,
+                    normalized_booked_by,
+                    created_at,
+                    created_at,
+                    expires_at,
+                ),
+            )
+        return self.get_draft(draft_id)
+
+    def get_draft(self, draft_id: str) -> dict[str, Any]:
+        with self._write_lock, self._connect() as connection:
+            row = self._load_draft(connection, draft_id)
+            row = self._expire_draft_if_needed(connection, row)
+            return self._draft_dict(connection, row)
+
+    def list_drafts(
+        self,
+        *,
+        session_id: str,
+    ) -> list[dict[str, Any]]:
+        with self._write_lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM meeting_room_booking_drafts
+                WHERE session_id = ?
+                ORDER BY round_no, created_at
+                """,
+                (session_id,),
+            ).fetchall()
+            return [
+                self._draft_dict(
+                    connection,
+                    self._expire_draft_if_needed(connection, row),
+                )
+                for row in rows
+            ]
+
+    def update_draft(
+        self,
+        draft_id: str,
+        *,
+        room_id: str,
+        floor: str,
+        date: str,
+        time_range: str,
+        capacity: int,
+        theme: str | None,
+    ) -> dict[str, Any]:
+        room_id = room_id.strip()
+        floor = _validate_floor(floor)
+        date = _validate_date(date)
+        start_time, end_time = _parse_time_range(time_range)
+        now = self._now_factory()
+        _validate_bookable_slot(date, start_time, end_time, now=now)
+        if capacity < 1:
+            raise MeetingRoomError("参会人数必须大于0")
+        with self._write_lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            draft = self._expire_draft_if_needed(
+                connection,
+                self._load_draft(connection, draft_id),
+            )
+            if draft["status"] != "pending":
+                raise MeetingRoomDraftStateError("该预约卡片已失效，无法修改")
+            room = self._validate_room_and_conflict(
+                connection,
+                room_id=room_id,
+                floor=floor,
+                date=date,
+                start_time=start_time,
+                end_time=end_time,
+                capacity=capacity,
+            )
+            normalized_theme = (
+                (theme or "").strip()
+                or f"{draft['booked_by']}预约的会议"
+            )
+            updated_at = now.isoformat(timespec="seconds")
+            connection.execute(
+                """
+                UPDATE meeting_room_booking_drafts
+                SET
+                    room_id = ?,
+                    floor = ?,
+                    booking_date = ?,
+                    start_time = ?,
+                    end_time = ?,
+                    capacity = ?,
+                    theme = ?,
+                    updated_at = ?
+                WHERE draft_id = ?
+                """,
+                (
+                    room["room_id"],
+                    floor,
+                    date,
+                    start_time,
+                    end_time,
+                    capacity,
+                    normalized_theme,
+                    updated_at,
+                    draft_id,
+                ),
+            )
+        return self.get_draft(draft_id)
+
+    def confirm_draft(self, draft_id: str) -> dict[str, Any]:
+        """The sole human-triggered final write path, with a fresh conflict check."""
+        with self._write_lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            draft = self._expire_draft_if_needed(
+                connection,
+                self._load_draft(connection, draft_id),
+            )
+            if draft["status"] == "confirmed":
+                return self._confirmed_draft_result(connection, draft)
+            if draft["status"] != "pending":
+                raise MeetingRoomDraftStateError("该预约卡片已失效，无法确认")
+            now = self._now_factory()
+            _validate_bookable_slot(
+                draft["booking_date"],
+                draft["start_time"],
+                draft["end_time"],
+                now=now,
+            )
+            room = self._validate_room_and_conflict(
+                connection,
+                room_id=draft["room_id"],
+                floor=draft["floor"],
+                date=draft["booking_date"],
+                start_time=draft["start_time"],
+                end_time=draft["end_time"],
+                capacity=draft["capacity"],
+            )
+            booking_id = uuid.uuid4().hex
+            meeting_id = (
+                f"NMS{draft['booking_date'].replace('/', '')}"
+                f"{uuid.uuid4().int % 10**13:013d}"
+            )
+            created_at = now.isoformat(timespec="seconds")
+            connection.execute(
+                """
+                INSERT INTO meeting_room_bookings(
+                    booking_id,
+                    meeting_id,
+                    room_id,
+                    booking_date,
+                    start_time,
+                    end_time,
+                    capacity,
+                    theme,
+                    booked_by,
+                    source,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'interactive', ?)
+                """,
+                (
+                    booking_id,
+                    meeting_id,
+                    draft["room_id"],
+                    draft["booking_date"],
+                    draft["start_time"],
+                    draft["end_time"],
+                    draft["capacity"],
+                    draft["theme"],
+                    draft["booked_by"],
+                    created_at,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE meeting_room_booking_drafts
+                SET
+                    status = 'confirmed',
+                    booking_id = ?,
+                    meeting_id = ?,
+                    updated_at = ?
+                WHERE draft_id = ?
+                """,
+                (booking_id, meeting_id, created_at, draft_id),
+            )
+            confirmed = connection.execute(
+                "SELECT * FROM meeting_room_booking_drafts WHERE draft_id = ?",
+                (draft_id,),
+            ).fetchone()
+            return {
+                "success": True,
+                "bookingId": booking_id,
+                "meetingId": meeting_id,
+                "roomId": draft["room_id"],
+                "roomName": room["room_name"],
+                "date": draft["booking_date"],
+                "timeRange": (
+                    f"{draft['start_time']}-{draft['end_time']}"
+                ),
+                "capacity": draft["capacity"],
+                "theme": draft["theme"],
+                "message": "会议室预约成功",
+                "draft": self._draft_dict(connection, confirmed),
+            }
+
+    def _load_draft(
+        self,
+        connection: sqlite3.Connection,
+        draft_id: str,
+    ) -> sqlite3.Row:
+        row = connection.execute(
+            "SELECT * FROM meeting_room_booking_drafts WHERE draft_id = ?",
+            (draft_id,),
+        ).fetchone()
+        if row is None:
+            raise MeetingRoomDraftNotFoundError("没有找到该预约卡片")
+        return row
+
+    def _expire_draft_if_needed(
+        self,
+        connection: sqlite3.Connection,
+        draft: sqlite3.Row,
+    ) -> sqlite3.Row:
+        expires_at = datetime.fromisoformat(draft["expires_at"])
+        if draft["status"] == "pending" and self._now_factory() >= expires_at:
+            connection.execute(
+                """
+                UPDATE meeting_room_booking_drafts
+                SET status = 'expired', updated_at = ?
+                WHERE draft_id = ?
+                """,
+                (
+                    self._now_factory().isoformat(timespec="seconds"),
+                    draft["draft_id"],
+                ),
+            )
+            return self._load_draft(connection, draft["draft_id"])
+        return draft
+
+    def _validate_room_and_conflict(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        room_id: str,
+        floor: str,
+        date: str,
+        start_time: str,
+        end_time: str,
+        capacity: int,
+    ) -> sqlite3.Row:
+        room = connection.execute(
+            """
+            SELECT room_id, room_name, floor, capacity
+            FROM meeting_rooms
+            WHERE room_id = ? AND floor = ?
+            """,
+            (room_id, floor),
+        ).fetchone()
+        if room is None:
+            raise MeetingRoomNotFoundError("没有找到该楼层的指定会议室")
+        if capacity > room["capacity"]:
+            raise MeetingRoomError(f"会议室最多容纳{room['capacity']}人")
+        conflict = connection.execute(
+            """
+            SELECT booking_id
+            FROM meeting_room_bookings
+            WHERE room_id = ?
+                AND booking_date = ?
+                AND start_time < ?
+                AND end_time > ?
+            LIMIT 1
+            """,
+            (room_id, date, end_time, start_time),
+        ).fetchone()
+        if conflict is not None:
+            raise MeetingRoomConflictError("该会议室在当前时段已被预订")
+        return room
+
+    def _draft_dict(
+        self,
+        connection: sqlite3.Connection,
+        draft: sqlite3.Row,
+    ) -> dict[str, Any]:
+        room = connection.execute(
+            "SELECT room_name FROM meeting_rooms WHERE room_id = ?",
+            (draft["room_id"],),
+        ).fetchone()
+        return {
+            "type": "meetingRoomBookingDraft",
+            "draftId": draft["draft_id"],
+            "sessionId": draft["session_id"],
+            "round": draft["round_no"],
+            "roomId": draft["room_id"],
+            "roomName": room["room_name"] if room else draft["room_id"],
+            "floor": draft["floor"],
+            "date": draft["booking_date"],
+            "timeRange": f"{draft['start_time']}-{draft['end_time']}",
+            "capacity": draft["capacity"],
+            "theme": draft["theme"],
+            "status": draft["status"],
+            "bookingId": draft["booking_id"],
+            "meetingId": draft["meeting_id"],
+            "expiresAt": draft["expires_at"],
+        }
+
+    def _confirmed_draft_result(
+        self,
+        connection: sqlite3.Connection,
+        draft: sqlite3.Row,
+    ) -> dict[str, Any]:
+        payload = self._draft_dict(connection, draft)
+        return {
+            "success": True,
+            "bookingId": draft["booking_id"],
+            "meetingId": draft["meeting_id"],
+            "roomId": draft["room_id"],
+            "roomName": payload["roomName"],
+            "date": draft["booking_date"],
+            "timeRange": f"{draft['start_time']}-{draft['end_time']}",
+            "capacity": draft["capacity"],
+            "theme": draft["theme"],
+            "message": "会议室预约成功",
+            "draft": payload,
+        }
+
 
 class MeetingRoomClient(Protocol):
     """Minimal client contract shared with future real API integration."""
@@ -571,6 +1038,19 @@ class MeetingRoomClient(Protocol):
         theme: str | None,
     ) -> dict[str, Any]: ...
 
+    def create_draft(
+        self,
+        *,
+        room_id: str,
+        floor: str,
+        date: str,
+        time_range: str,
+        capacity: int,
+        theme: str | None,
+        session_id: str | None,
+        round_no: int | None,
+    ) -> dict[str, Any]: ...
+
 
 class SandboxMeetingRoomClient:
     """Adapter exposing the same two operations as the future HTTP client."""
@@ -583,6 +1063,9 @@ class SandboxMeetingRoomClient:
 
     def create(self, **kwargs) -> dict[str, Any]:
         return self.store.create_booking(**kwargs)
+
+    def create_draft(self, **kwargs) -> dict[str, Any]:
+        return self.store.create_draft(**kwargs)
 
 
 class QueryMeetingRoomsInput(BaseModel):
@@ -630,9 +1113,6 @@ class BookMeetingRoomInput(BaseModel):
     floor: str = Field(description="楼层，纯数字，例如7")
     date: str = Field(description="预约日期，格式yyyy/MM/dd")
     timeRange: str = Field(description="预约时间段，格式HH:mm-HH:mm")
-    confirmed: bool = Field(
-        description="用户是否明确确认预约，必须为true"
-    )
     capacity: int | None = Field(
         default=None,
         description="参会人数，默认5",
@@ -653,8 +1133,6 @@ class BookMeetingRoomInput(BaseModel):
         self.floor = _validate_floor(self.floor)
         self.date = _validate_date(self.date)
         _parse_time_range(self.timeRange)
-        if self.confirmed is not True:
-            raise ValueError("confirmed必须为true")
         if self.theme is not None:
             self.theme = self.theme.strip() or None
         return self
@@ -696,9 +1174,9 @@ def create_meeting_room_tools(
         "bookMeetingRoom",
         args_schema=BookMeetingRoomInput,
         description=(
-            "创建会议室预约。只有用户已经选择具体会议室并明确确认预约时才能调用。"
-            "roomId、floor、date、timeRange和confirmed必须提供，confirmed必须为true。"
-            "调用预约接口前会重新查询并检查冲突。不要猜测参数。"
+            "生成一张由用户最终确认的会议室预约卡片，本工具绝不创建预约。"
+            "roomId、floor、date和timeRange必须提供。会先重新查询并检查冲突；"
+            "用户必须在卡片中修改或确认，模型不得代替用户完成最后确认。"
         ),
     )
     def book_meeting_room(
@@ -706,15 +1184,9 @@ def create_meeting_room_tools(
         floor: str,
         date: str,
         timeRange: str,
-        confirmed: bool,
         capacity: int | None = None,
         theme: str | None = None,
     ) -> str:
-        if confirmed is not True:
-            return json.dumps(
-                {"success": False, "message": "用户尚未明确确认预约"},
-                ensure_ascii=False,
-            )
         actual_capacity = capacity or 5
         latest = client.select_meet(
             floor=floor,
@@ -745,18 +1217,26 @@ def create_meeting_room_tools(
                 ensure_ascii=False,
             )
         try:
-            result = client.create(
+            context = _booking_draft_context.get()
+            result = client.create_draft(
                 room_id=roomId,
                 floor=floor,
                 date=date,
                 time_range=timeRange,
                 capacity=actual_capacity,
                 theme=theme,
+                session_id=context[0] if context else None,
+                round_no=context[1] if context else None,
             )
-        except MeetingRoomConflictError:
+            result = {
+                "success": True,
+                **result,
+                "message": "请在预约卡片中检查参数并由你本人确认",
+            }
+        except (MeetingRoomConflictError, MeetingRoomError) as exc:
             result = {
                 "success": False,
-                "message": "该会议室在当前时段已被预订",
+                "message": str(exc),
             }
         return json.dumps(result, ensure_ascii=False)
 
@@ -796,6 +1276,43 @@ def _parse_time_range(value: str) -> tuple[str, str]:
     if start_time >= end_time:
         raise MeetingRoomError("预约结束时间必须晚于开始时间")
     return start_time, end_time
+
+
+def _validate_bookable_slot(
+    date: str,
+    start_time: str,
+    end_time: str,
+    *,
+    now: datetime,
+) -> None:
+    start_minutes = _time_to_minutes(start_time)
+    end_minutes = _time_to_minutes(end_time)
+    if (
+        start_minutes < WORKDAY_START_MINUTES
+        or end_minutes > WORKDAY_END_MINUTES
+    ):
+        raise MeetingRoomError("会议室仅支持工作时段09:00-18:00预约")
+    if (
+        start_minutes % SLOT_MINUTES != 0
+        or end_minutes % SLOT_MINUTES != 0
+    ):
+        raise MeetingRoomError("预约时间必须按30分钟整点或半点选择")
+    localized_now = (
+        now.replace(tzinfo=SHANGHAI_TIMEZONE)
+        if now.tzinfo is None
+        else now.astimezone(SHANGHAI_TIMEZONE)
+    )
+    booking_start = datetime.strptime(
+        f"{date} {start_time}",
+        "%Y/%m/%d %H:%M",
+    ).replace(tzinfo=SHANGHAI_TIMEZONE)
+    if booking_start < localized_now:
+        raise MeetingRoomError("不能预约过去的时间")
+
+
+def _time_to_minutes(value: str) -> int:
+    hour, minute = value.split(":")
+    return int(hour) * 60 + int(minute)
 
 
 def _overlaps(

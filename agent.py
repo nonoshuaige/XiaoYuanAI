@@ -16,6 +16,7 @@ from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
     SystemMessage,
+    ToolMessage,
 )
 from langchain_core.tools import BaseTool
 
@@ -30,6 +31,8 @@ from model_audit import capture_model_call, serialize_ai_message
 from meeting_room_tool import (
     MeetingRoomStore,
     SandboxMeetingRoomClient,
+    reset_booking_draft_context,
+    set_booking_draft_context,
 )
 from meeting_room_skill import create_meeting_room_skill
 from people_tool import PeopleStore, create_find_person_tool
@@ -50,6 +53,7 @@ class AgentResponse:
     session_id: str
     round_no: int
     model_id: str
+    artifacts: tuple[dict[str, Any], ...] = ()
 
 
 class AsyncSummaryManager:
@@ -169,7 +173,9 @@ class AsyncSummaryManager:
         previous_end = previous.end_round if previous else 0
         previous_range = f"第 1–{previous_end} 轮" if previous else "无"
         transcript = "\n".join(
-            f"第 {message['round']} 轮{_role_label(message['role'])}"
+            f"第 {message['round']} 轮"
+            f"[记录时间：{message['created_at']}｜Asia/Shanghai]"
+            f"{_role_label(message['role'])}"
             f"{_round_status_note(message)}："
             f"{message['content']}"
             for message in messages
@@ -287,9 +293,17 @@ class AgentRuntime:
                         _to_langchain_messages(uncovered_messages)
                     )
                     model_messages.append(HumanMessage(content=message))
-                    result = graph.invoke({"messages": model_messages})
+                    draft_context_token = set_booking_draft_context(
+                        session_id,
+                        round_no,
+                    )
+                    try:
+                        result = graph.invoke({"messages": model_messages})
+                    finally:
+                        reset_booking_draft_context(draft_context_token)
                     ai_message = _last_ai_message(result["messages"])
                     reply = _content_text(ai_message.content).strip()
+                    artifacts = _extract_artifacts(result["messages"])
                     self.store.complete_round(
                         session_id,
                         round_no,
@@ -326,6 +340,7 @@ class AgentRuntime:
             session_id=session_id,
             round_no=round_no,
             model_id=selected_model_id,
+            artifacts=tuple(artifacts),
         )
 
     def _load_model_context(
@@ -549,6 +564,28 @@ def _content_text(content: Any) -> str:
     if isinstance(content, (dict, tuple)):
         return json.dumps(content, ensure_ascii=False)
     return str(content)
+
+
+def _extract_artifacts(
+    messages: list[BaseMessage],
+) -> list[dict[str, Any]]:
+    """Only trust structured artifacts emitted by actual ToolMessage objects."""
+    artifacts: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, ToolMessage):
+            continue
+        try:
+            payload = json.loads(_content_text(message.content))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if (
+            isinstance(payload, dict)
+            and payload.get("success") is True
+            and payload.get("type") == "meetingRoomBookingDraft"
+            and payload.get("draftId")
+        ):
+            artifacts.append(payload)
+    return artifacts
 
 
 def _agent_graph_name(model_id: str) -> str:

@@ -552,6 +552,130 @@
       color: #9e2e3e;
       background: #fff7f8;
     }
+    .booking-card {
+      width: min(100%, 620px);
+      margin-top: 14px;
+      overflow: hidden;
+      border: 1px solid #b9d6ce;
+      border-radius: 18px;
+      background: linear-gradient(145deg, #fbfffd, #f2f8f5);
+      box-shadow: 0 14px 35px rgba(23, 107, 91, .1);
+    }
+    .booking-card-head {
+      padding: 17px 19px 14px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      border-bottom: 1px solid #d9e8e2;
+      background: rgba(255, 255, 255, .7);
+    }
+    .booking-card-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #124f43;
+      font-weight: 760;
+    }
+    .booking-card-title svg { width: 21px; height: 21px; flex: 0 0 auto; }
+    .booking-status {
+      padding: 4px 9px;
+      border-radius: 999px;
+      color: #756127;
+      background: #fff3c4;
+      font-size: 12px;
+      font-weight: 680;
+      white-space: nowrap;
+    }
+    .booking-status.confirmed { color: #0d6b4f; background: #dff5eb; }
+    .booking-status.expired,
+    .booking-status.cancelled { color: #8b3f49; background: #fbe6e9; }
+    .booking-card-body {
+      padding: 17px 19px 19px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 13px;
+    }
+    .booking-field { min-width: 0; display: grid; gap: 6px; }
+    .booking-field.wide { grid-column: 1 / -1; }
+    .booking-field label {
+      color: #63746d;
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .booking-field input,
+    .booking-field select {
+      width: 100%;
+      height: 41px;
+      padding: 0 11px;
+      border: 1px solid #cfddd7;
+      border-radius: 10px;
+      outline: none;
+      color: var(--ink);
+      background: white;
+      font: inherit;
+      font-size: 14px;
+    }
+    .booking-field input:focus,
+    .booking-field select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(23, 107, 91, .09);
+    }
+    .booking-room-line { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+    .booking-refresh {
+      min-width: 84px;
+      border: 1px solid #c7d9d2;
+      border-radius: 10px;
+      color: #155e51;
+      background: #eff8f4;
+      font-weight: 650;
+    }
+    .booking-actions {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 9px;
+      padding-top: 4px;
+    }
+    .booking-action {
+      min-height: 41px;
+      padding: 0 16px;
+      border: 0;
+      border-radius: 11px;
+      font-weight: 700;
+    }
+    .booking-action.save { color: #155e51; background: #deeee8; }
+    .booking-action.confirm {
+      color: white;
+      background: var(--accent);
+      box-shadow: 0 8px 18px rgba(23, 107, 91, .18);
+    }
+    .booking-action:focus-visible,
+    .booking-refresh:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .booking-feedback {
+      grid-column: 1 / -1;
+      min-height: 18px;
+      color: #6a766f;
+      font-size: 12px;
+    }
+    .booking-feedback.error { color: #a52f40; }
+    .booking-proof {
+      grid-column: 1 / -1;
+      padding: 12px 13px;
+      border: 1px solid #c8e6da;
+      border-radius: 11px;
+      color: #155e51;
+      background: #eaf8f2;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .booking-card.is-locked input,
+    .booking-card.is-locked select,
+    .booking-card.is-locked button { opacity: .7; }
     .composer {
       padding: 15px 26px 20px;
       border-top: 1px solid var(--line);
@@ -704,6 +828,13 @@
       .session-actions { opacity: 1; }
       .messages { padding: 20px 14px; }
       .bubble { max-width: 92%; }
+      .booking-card-body { grid-template-columns: 1fr; }
+      .booking-field.wide,
+      .booking-actions,
+      .booking-feedback,
+      .booking-proof { grid-column: 1; }
+      .booking-actions { align-items: stretch; flex-direction: column-reverse; }
+      .booking-action { width: 100%; }
       .chat-header { padding: 13px 16px; }
       .chat-header p { display: none; }
       .model-caption { display: none; }
@@ -1134,22 +1265,323 @@
     return fragment;
   }
 
-  function renderMessageContent(bubble, text, role) {
+  function bookingCalendarIcon() {
+    const namespace = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(namespace, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS(namespace, "path");
+    path.setAttribute(
+      "d",
+      "M6 3v3m12-3v3M4 9h16M6 5h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Zm3 8h6m-6 4h4"
+    );
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1.7");
+    path.setAttribute("stroke-linecap", "round");
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function appendBookingField(grid, labelText, control, {wide = false} = {}) {
+    const field = document.createElement("div");
+    field.className = `booking-field${wide ? " wide" : ""}`;
+    const label = document.createElement("label");
+    label.textContent = labelText;
+    label.htmlFor = control.id;
+    field.append(label, control);
+    grid.appendChild(field);
+    return field;
+  }
+
+  function timeSelect(id, value, {allowEnd = false} = {}) {
+    const select = document.createElement("select");
+    select.id = id;
+    const finalMinute = allowEnd ? 18 * 60 : 17 * 60 + 30;
+    for (let minute = 9 * 60; minute <= finalMinute; minute += 30) {
+      const hour = String(Math.floor(minute / 60)).padStart(2, "0");
+      const part = String(minute % 60).padStart(2, "0");
+      const option = document.createElement("option");
+      option.value = `${hour}:${part}`;
+      option.textContent = option.value;
+      option.selected = option.value === value;
+      select.appendChild(option);
+    }
+    return select;
+  }
+
+  function shanghaiTodayInputValue() {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date());
+    const values = Object.fromEntries(
+      parts.map(part => [part.type, part.value])
+    );
+    return `${values.year}-${values.month}-${values.day}`;
+  }
+
+  function bookingDraftPayload(controls) {
+    return {
+      roomId: controls.room.value,
+      floor: controls.floor.value,
+      date: controls.date.value.replaceAll("-", "/"),
+      timeRange: `${controls.start.value}-${controls.end.value}`,
+      capacity: Number(controls.capacity.value),
+      theme: controls.theme.value.trim() || null,
+    };
+  }
+
+  function setBookingControlsDisabled(controls, disabled) {
+    Object.values(controls).forEach(control => {
+      control.disabled = disabled;
+    });
+  }
+
+  function renderBookingCard(host, draft) {
+    host.replaceChildren();
+    const card = document.createElement("section");
+    card.className = "booking-card";
+    card.dataset.draftId = draft.draftId;
+    card.setAttribute("aria-label", "会议室预约确认卡片");
+
+    const head = document.createElement("div");
+    head.className = "booking-card-head";
+    const title = document.createElement("div");
+    title.className = "booking-card-title";
+    title.append(bookingCalendarIcon(), document.createTextNode("会议室预约"));
+    const status = document.createElement("span");
+    const statusText = {
+      pending: "等待你确认",
+      confirmed: "预约成功",
+      expired: "已过期",
+      cancelled: "已取消",
+    };
+    status.className = `booking-status ${draft.status || "pending"}`;
+    status.textContent = statusText[draft.status] || "等待你确认";
+    head.append(title, status);
+
+    const body = document.createElement("div");
+    body.className = "booking-card-body";
+    const unique = draft.draftId.slice(0, 8);
+    const floor = document.createElement("select");
+    floor.id = `booking-floor-${unique}`;
+    ["6", "7", "8"].forEach(value => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = `${value}F`;
+      option.selected = value === String(draft.floor);
+      floor.appendChild(option);
+    });
+
+    const room = document.createElement("select");
+    room.id = `booking-room-${unique}`;
+    const currentRoom = document.createElement("option");
+    currentRoom.value = draft.roomId;
+    currentRoom.textContent = draft.roomName;
+    room.appendChild(currentRoom);
+
+    const date = document.createElement("input");
+    date.id = `booking-date-${unique}`;
+    date.type = "date";
+    date.min = shanghaiTodayInputValue();
+    date.value = draft.date.replaceAll("/", "-");
+
+    const [startValue, endValue] = draft.timeRange.split("-");
+    const start = timeSelect(`booking-start-${unique}`, startValue);
+    const end = timeSelect(
+      `booking-end-${unique}`,
+      endValue,
+      {allowEnd: true}
+    );
+
+    const capacity = document.createElement("input");
+    capacity.id = `booking-capacity-${unique}`;
+    capacity.type = "number";
+    capacity.min = "1";
+    capacity.max = "500";
+    capacity.value = draft.capacity;
+
+    const theme = document.createElement("input");
+    theme.id = `booking-theme-${unique}`;
+    theme.maxLength = 100;
+    theme.value = draft.theme || "";
+
+    appendBookingField(body, "楼层", floor);
+    appendBookingField(body, "日期", date);
+    const roomField = document.createElement("div");
+    roomField.className = "booking-field wide";
+    const roomLabel = document.createElement("label");
+    roomLabel.htmlFor = room.id;
+    roomLabel.textContent = "会议室";
+    const roomLine = document.createElement("div");
+    roomLine.className = "booking-room-line";
+    const refresh = document.createElement("button");
+    refresh.className = "booking-refresh";
+    refresh.type = "button";
+    refresh.textContent = "刷新可用";
+    roomLine.append(room, refresh);
+    roomField.append(roomLabel, roomLine);
+    body.appendChild(roomField);
+    appendBookingField(body, "开始时间", start);
+    appendBookingField(body, "结束时间", end);
+    appendBookingField(body, "参会人数", capacity);
+    appendBookingField(body, "会议主题", theme);
+
+    const feedback = document.createElement("div");
+    feedback.className = "booking-feedback";
+    feedback.setAttribute("aria-live", "polite");
+    feedback.textContent = "检查参数后由你本人确认，模型无法代替点击。";
+    body.appendChild(feedback);
+
+    const actions = document.createElement("div");
+    actions.className = "booking-actions";
+    const save = document.createElement("button");
+    save.className = "booking-action save";
+    save.type = "button";
+    save.textContent = "保存修改";
+    const confirm = document.createElement("button");
+    confirm.className = "booking-action confirm";
+    confirm.type = "button";
+    confirm.textContent = "确认预约";
+    actions.append(save, confirm);
+    body.appendChild(actions);
+
+    const controls = {floor, room, date, start, end, capacity, theme};
+    const locked = draft.status !== "pending";
+    if (locked) {
+      card.classList.add("is-locked");
+      setBookingControlsDisabled(controls, true);
+      refresh.disabled = true;
+      save.disabled = true;
+      confirm.disabled = true;
+    }
+    if (draft.status === "confirmed") {
+      const proof = document.createElement("div");
+      proof.className = "booking-proof";
+      proof.textContent =
+        `预约编号 ${draft.meetingId} · ${draft.roomName} · ` +
+        `${draft.date} ${draft.timeRange}`;
+      body.insertBefore(proof, actions);
+      feedback.textContent = "预约已由服务端真实写入。";
+    } else if (locked) {
+      feedback.textContent = "该卡片已失效，请在对话中重新发起预约。";
+    }
+
+    async function saveDraft({silent = false} = {}) {
+      feedback.classList.remove("error");
+      feedback.textContent = silent ? "正在校验并确认…" : "正在保存并校验…";
+      save.disabled = true;
+      confirm.disabled = true;
+      try {
+        const updated = await api(
+          `/api/meeting-room-booking-drafts/${draft.draftId}`,
+          {
+            method: "PUT",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(bookingDraftPayload(controls)),
+          }
+        );
+        if (!silent) renderBookingCard(host, updated);
+        return updated;
+      } catch (error) {
+        feedback.classList.add("error");
+        feedback.textContent = error.message;
+        save.disabled = false;
+        confirm.disabled = false;
+        throw error;
+      }
+    }
+
+    refresh.addEventListener("click", async () => {
+      feedback.classList.remove("error");
+      feedback.textContent = "正在查询当前条件下的会议室…";
+      refresh.disabled = true;
+      const payload = bookingDraftPayload(controls);
+      const params = new URLSearchParams({
+        floor: payload.floor,
+        date: payload.date,
+        timeRange: payload.timeRange,
+        capacity: String(payload.capacity),
+      });
+      try {
+        const result = await api(
+          `/api/meeting-room-booking-drafts/${draft.draftId}/room-options?${params}`
+        );
+        room.replaceChildren();
+        result.rooms.forEach(candidate => {
+          const option = document.createElement("option");
+          option.value = candidate.roomId;
+          option.textContent =
+            `${candidate.roomName} · ${candidate.capacity}人` +
+            (candidate.available ? "" : " · 不可用");
+          option.disabled = !candidate.available;
+          option.selected = candidate.roomId === draft.roomId;
+          room.appendChild(option);
+        });
+        const firstAvailable = [...room.options].find(option => !option.disabled);
+        if (!room.value && firstAvailable) firstAvailable.selected = true;
+        feedback.textContent = firstAvailable
+          ? "已按当前条件刷新，请选择可用会议室。"
+          : "当前条件下没有可用会议室。";
+      } catch (error) {
+        feedback.classList.add("error");
+        feedback.textContent = error.message;
+      } finally {
+        refresh.disabled = false;
+      }
+    });
+
+    save.addEventListener("click", () => saveDraft().catch(() => {}));
+    confirm.addEventListener("click", async () => {
+      try {
+        await saveDraft({silent: true});
+        const result = await api(
+          `/api/meeting-room-booking-drafts/${draft.draftId}/confirm`,
+          {method: "POST"}
+        );
+        renderBookingCard(host, result.draft);
+      } catch (error) {
+        // saveDraft or the confirm endpoint has already supplied a safe message.
+        if (!feedback.classList.contains("error")) {
+          feedback.classList.add("error");
+          feedback.textContent = error.message || "确认失败，请检查参数后重试。";
+          save.disabled = false;
+          confirm.disabled = false;
+        }
+      }
+    });
+
+    card.append(head, body);
+    host.appendChild(card);
+  }
+
+  function renderMessageContent(bubble, text, role, artifacts = []) {
     bubble.replaceChildren();
     if (role === "assistant") {
       bubble.appendChild(renderMarkdown(text));
+      artifacts
+        .filter(artifact => artifact.type === "meetingRoomBookingDraft")
+        .forEach(artifact => {
+          const host = document.createElement("div");
+          host.className = "booking-card-host";
+          bubble.appendChild(host);
+          renderBookingCard(host, artifact);
+        });
     } else {
       bubble.textContent = text;
     }
   }
 
-  function appendMessage(text, role) {
+  function appendMessage(text, role, artifacts = []) {
     messages.querySelector(".welcome")?.remove();
     const row = document.createElement("div");
     row.className = `row ${role}`;
     const bubble = document.createElement("div");
     bubble.className = "bubble";
-    renderMessageContent(bubble, text, role);
+    renderMessageContent(bubble, text, role, artifacts);
     row.appendChild(bubble);
     messages.appendChild(row);
     messages.scrollTop = messages.scrollHeight;
@@ -1509,7 +1941,10 @@
       messages.appendChild(welcome);
     } else {
       for (const message of context.messages) {
-        appendMessage(message.content, message.role);
+        const artifacts = message.role === "assistant"
+          ? (context.artifactsByRound?.[message.round] || [])
+          : [];
+        appendMessage(message.content, message.role, artifacts);
       }
     }
     messages.scrollTop = messages.scrollHeight;
@@ -1670,7 +2105,8 @@
       renderMessageContent(
         pending.querySelector(".bubble"),
         result.reply,
-        "assistant"
+        "assistant",
+        result.artifacts || []
       );
       messages.scrollTop = messages.scrollHeight;
       chatTitle.textContent = result.title;

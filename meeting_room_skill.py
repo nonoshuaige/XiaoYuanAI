@@ -20,6 +20,8 @@ MEETING_ROOM_SKILL_INSTRUCTIONS = """## 执行流程
 - 查询指定时段且capacity未提供时按5人处理。
 - 用户明确说“今天”“明天”或“后天”时，根据本轮服务端时间上下文换算date。
 - 用户只说“现在”但没有给出结束时间或时长时，先询问完整时段。
+- 预约时间只能落在09:00-18:00，开始和结束必须是整点或半点；不得推荐或提交
+  已经过去的日期、时间以及非工作时段。
 - queryMeetingRooms只查询，不创建预约。
 
 ### 2. 根据查询结果回答
@@ -31,27 +33,24 @@ MEETING_ROOM_SKILL_INSTRUCTIONS = """## 执行流程
 - 用户问房间时，说明该房间09:00-18:00的占用情况和适合的空闲时间。
 - 只展示queryMeetingRooms真实返回的候选，不编造房间、状态、时间或roomId。
 
-### 3. 让用户选择
+### 3. 让用户选择并生成预约卡片
 
 - 预约必须使用查询结果中的roomId；候选不唯一时，请用户选择具体会议室。
-- 用户选择会议室只代表选中候选，不等于确认预约，此时不得调用bookMeetingRoom。
-
-### 4. 获取明确确认
-
-- 在预约前汇总会议室、楼层、日期、时间、人数和主题，请用户明确确认。
+- 用户选择具体会议室，且roomId、floor、date和timeRange齐全后，调用bookMeetingRoom
+  生成待确认预约卡片；该工具只生成草稿，绝不创建预约。
 - 用户明确提供主题时原样使用；用户未提供主题时，不猜测用户名或主题，也不为此追加
-  追问。确认摘要中说明“主题将由服务端按‘预约人姓名+预约的会议’生成”，调用
+  追问。说明“主题将由服务端按‘预约人姓名+预约的会议’生成”，调用
   bookMeetingRoom时将theme留空。
-- 只有用户明确表示“确认预约”等同等含义时，confirmed才可设为true。
-- 如果确认后任何预约参数发生变化，必须基于新参数重新获取确认。
-- 不允许猜测roomId、floor、date、timeRange或confirmed。
+- 不允许猜测roomId、floor、date或timeRange。
 
-### 5. 执行预约
+### 4. 最终确认必须由用户操作
 
-- bookMeetingRoom必须同时提供roomId、floor、date、timeRange和confirmed=true。
-- bookMeetingRoom会在创建前重新查询会议室并检查冲突；不得绕过重查。
-- 只依据bookMeetingRoom的真实返回告知成功或失败，不得由模型生成成功凭证。
-- 失败时不得声称成功，也不得擅自改订其他会议室。
+- 即使用户在自然语言中说“确认”“就订这个”，模型也不能代替用户执行最终预约；
+  必须提示用户在预约卡片中检查、修改参数并点击“确认预约”。
+- 用户修改卡片参数后，由服务端重新校验时间、容量与冲突，不需要模型补发确认。
+- 只有用户点击卡片确认按钮后，服务端才会再次查询冲突并调用真实预约写入。
+- 在卡片返回真实bookingId和meetingId之前，不得声称预约成功或生成成功凭证。
+- 卡片确认失败时说明真实错误，不得擅自改订其他会议室。
 """
 
 
@@ -60,7 +59,7 @@ def create_meeting_room_skill(client: MeetingRoomClient) -> AgentSkill:
     return AgentSkill(
         name="meeting-room-booking",
         description=(
-            "查询会议室、引导用户选择具体房间，并在明确确认后创建预约。"
+            "查询会议室、生成可编辑预约卡片，并由用户在卡片中最终确认。"
         ),
         instructions=MEETING_ROOM_SKILL_INSTRUCTIONS,
         tools=tuple(create_meeting_room_tools(client)),

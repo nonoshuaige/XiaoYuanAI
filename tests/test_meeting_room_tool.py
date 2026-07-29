@@ -33,6 +33,10 @@ class TrackingMeetingRoomClient(SandboxMeetingRoomClient):
         self.calls.append("create")
         return super().create(**kwargs)
 
+    def create_draft(self, **kwargs):
+        self.calls.append("create_draft")
+        return super().create_draft(**kwargs)
+
 
 class MeetingRoomToolTests(unittest.TestCase):
     def setUp(self):
@@ -84,13 +88,13 @@ class MeetingRoomToolTests(unittest.TestCase):
             [registered_tool.name for registered_tool in skill.tools],
             ["queryMeetingRooms", "bookMeetingRoom"],
         )
-        self.assertIn("用户选择会议室只代表选中候选", skill.instructions)
+        self.assertIn("生成待确认预约卡片", skill.instructions)
         self.assertIn("不要求用户必须先提供楼层", skill.instructions)
         self.assertIn("suggestedTimeRanges", skill.instructions)
         self.assertIn("预约人姓名+预约的会议", skill.instructions)
         self.assertIn("将theme留空", skill.instructions)
-        self.assertIn("confirmed才可设为true", skill.instructions)
-        self.assertIn("重新查询会议室并检查冲突", skill.instructions)
+        self.assertIn("模型也不能代替用户执行最终预约", skill.instructions)
+        self.assertIn("服务端才会再次查询冲突", skill.instructions)
 
     def test_timed_tool_query_keeps_conflicts_and_suggests_alternatives(self):
         query_tool, _ = create_meeting_room_tools(
@@ -163,7 +167,7 @@ class MeetingRoomToolTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             query_tool.invoke({})
 
-    def test_booking_requeries_before_create_and_returns_real_ids(self):
+    def test_booking_tool_requeries_then_creates_draft_without_booking(self):
         tracking_client = TrackingMeetingRoomClient(self.store)
         _, booking_tool = create_meeting_room_tools(tracking_client)
 
@@ -174,34 +178,38 @@ class MeetingRoomToolTests(unittest.TestCase):
                     "floor": "7",
                     "date": "2026/07/29",
                     "timeRange": "09:00-10:00",
-                    "confirmed": True,
                     "capacity": 5,
                     "theme": "需求讨论",
                 }
             )
         )
 
-        self.assertEqual(tracking_client.calls, ["select", "create"])
+        self.assertEqual(tracking_client.calls, ["select", "create_draft"])
         self.assertTrue(result["success"])
+        self.assertEqual(result["type"], "meetingRoomBookingDraft")
         self.assertEqual(result["roomId"], "room-707")
-        self.assertTrue(result["bookingId"])
-        self.assertTrue(result["meetingId"].startswith("NMS20260729"))
+        self.assertTrue(result["draftId"])
+        self.assertIsNone(result["bookingId"])
+        self.assertIsNone(result["meetingId"])
+        room = next(
+            item
+            for item in self.store.list_rooms(
+                room_query="707",
+                date="2026/07/29",
+            )["rooms"]
+            if item["roomId"] == "room-707"
+        )
+        self.assertEqual(room["occupied"], [])
 
-    def test_booking_requires_explicit_confirmation(self):
+    def test_booking_tool_schema_has_no_model_confirmation_parameter(self):
         _, booking_tool = create_meeting_room_tools(
             SandboxMeetingRoomClient(self.store)
         )
 
-        with self.assertRaises(ValidationError):
-            booking_tool.invoke(
-                {
-                    "roomId": "room-707",
-                    "floor": "7",
-                    "date": "2026/07/29",
-                    "timeRange": "09:00-10:00",
-                    "confirmed": False,
-                }
-            )
+        self.assertNotIn(
+            "confirmed",
+            booking_tool.args_schema.model_json_schema()["properties"],
+        )
 
     def test_server_generates_default_theme_from_trusted_booker(self):
         created = self.store.create_booking(
@@ -224,7 +232,7 @@ class MeetingRoomToolTests(unittest.TestCase):
         self.assertEqual(room["occupied"][0]["theme"], "张三预约的会议")
         self.assertEqual(room["occupied"][0]["bookedBy"], "张三")
 
-    def test_booking_tool_leaves_default_theme_to_server(self):
+    def test_booking_tool_leaves_default_theme_to_server_draft(self):
         _, booking_tool = create_meeting_room_tools(
             SandboxMeetingRoomClient(self.store)
         )
@@ -236,13 +244,51 @@ class MeetingRoomToolTests(unittest.TestCase):
                     "floor": "7",
                     "date": "2026/07/29",
                     "timeRange": "16:00-17:00",
-                    "confirmed": True,
                 }
             )
         )
 
         self.assertTrue(result["success"])
         self.assertEqual(result["theme"], "沙箱访客预约的会议")
+        self.assertEqual(result["status"], "pending")
+
+    def test_human_confirmation_is_the_only_final_write_and_is_idempotent(self):
+        draft = self.store.create_draft(
+            room_id="room-711",
+            floor="7",
+            date="2026/07/29",
+            time_range="16:00-17:00",
+            theme="人工确认",
+        )
+        before = self.store.list_rooms(
+            room_query="711",
+            date="2026/07/29",
+        )["rooms"][0]["occupied"]
+        self.assertEqual(before, [])
+
+        confirmed = self.store.confirm_draft(draft["draftId"])
+        repeated = self.store.confirm_draft(draft["draftId"])
+
+        self.assertTrue(confirmed["success"])
+        self.assertEqual(confirmed["bookingId"], repeated["bookingId"])
+        self.assertEqual(confirmed["draft"]["status"], "confirmed")
+
+    def test_store_rejects_past_outside_workday_and_non_half_hour(self):
+        invalid_slots = (
+            ("2026/07/28", "13:00-13:30", "过去"),
+            ("2026/07/29", "08:30-09:30", "09:00-18:00"),
+            ("2026/07/29", "17:30-18:30", "09:00-18:00"),
+            ("2026/07/29", "09:15-10:00", "30分钟"),
+        )
+        for date, time_range, message in invalid_slots:
+            with self.subTest(date=date, time_range=time_range):
+                with self.assertRaisesRegex(ValueError, message):
+                    self.store.create_booking(
+                        room_id="room-711",
+                        floor="7",
+                        date=date,
+                        time_range=time_range,
+                    )
 
     def test_store_rejects_overlap_but_allows_adjacent_booking(self):
         first = self.store.create_booking(

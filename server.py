@@ -18,6 +18,8 @@ from config import get_model_options
 from conversation_store import conversation_store
 from meeting_room_tool import (
     MeetingRoomConflictError,
+    MeetingRoomDraftNotFoundError,
+    MeetingRoomDraftStateError,
     MeetingRoomError,
     MeetingRoomNotFoundError,
     MeetingRoomStore,
@@ -32,7 +34,7 @@ from people_tool import (
 app = FastAPI(title="小原 AI 助手")
 SANDBOX_MODE = os.getenv("XIAOYUAN_SANDBOX") == "1"
 people_store = PeopleStore()
-meeting_room_store = MeetingRoomStore() if SANDBOX_MODE else None
+meeting_room_store = MeetingRoomStore(seed_sandbox_data=SANDBOX_MODE)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -85,6 +87,23 @@ class MeetingRoomBookingRequest(BaseModel):
         pattern=r"^\d{2}:\d{2}-\d{2}:\d{2}$",
     )
     confirmed: Literal[True]
+    capacity: int = Field(default=5, ge=1, le=500)
+    theme: str | None = Field(default=None, max_length=100)
+
+
+class MeetingRoomDraftUpdateRequest(BaseModel):
+    model_config = ConfigDict(
+        str_strip_whitespace=True,
+        populate_by_name=True,
+    )
+
+    room_id: str = Field(alias="roomId", min_length=1, max_length=80)
+    floor: str = Field(min_length=1, max_length=8, pattern=r"^\d+$")
+    date: str = Field(pattern=r"^\d{4}/\d{2}/\d{2}$")
+    time_range: str = Field(
+        alias="timeRange",
+        pattern=r"^\d{2}:\d{2}-\d{2}:\d{2}$",
+    )
     capacity: int = Field(default=5, ge=1, le=500)
     theme: str | None = Field(default=None, max_length=100)
 
@@ -200,7 +219,6 @@ async def list_sandbox_meeting_rooms(
     capacity: int | None = Query(default=None, ge=1, le=500),
 ):
     _require_sandbox()
-    assert meeting_room_store is not None
     try:
         return await run_in_threadpool(
             meeting_room_store.list_rooms,
@@ -219,7 +237,6 @@ async def create_sandbox_meeting_room_booking(
     request: MeetingRoomBookingRequest,
 ):
     _require_sandbox()
-    assert meeting_room_store is not None
     try:
         return await run_in_threadpool(
             meeting_room_store.create_booking,
@@ -272,6 +289,7 @@ async def chat_endpoint(request: ChatRequest):
             f"/api/sessions/{response.session_id}/rounds/"
             f"{response.round_no}/model-call"
         ),
+        "artifacts": list(response.artifacts),
     }
 
 
@@ -292,7 +310,106 @@ async def session_context(session_id: str):
         context = get_context(session_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {"sessionId": session_id, **context}
+    drafts = await run_in_threadpool(
+        meeting_room_store.list_drafts,
+        session_id=session_id,
+    )
+    artifacts_by_round: dict[int, list[dict]] = {}
+    for draft in drafts:
+        if draft["round"] is not None:
+            artifacts_by_round.setdefault(int(draft["round"]), []).append(
+                draft
+            )
+    return {
+        "sessionId": session_id,
+        **context,
+        "artifactsByRound": artifacts_by_round,
+    }
+
+
+@app.get("/api/meeting-room-booking-drafts/{draft_id}")
+async def get_meeting_room_booking_draft(draft_id: str):
+    try:
+        return await run_in_threadpool(meeting_room_store.get_draft, draft_id)
+    except MeetingRoomDraftNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.put("/api/meeting-room-booking-drafts/{draft_id}")
+async def update_meeting_room_booking_draft(
+    draft_id: str,
+    request: MeetingRoomDraftUpdateRequest,
+):
+    try:
+        return await run_in_threadpool(
+            meeting_room_store.update_draft,
+            draft_id,
+            room_id=request.room_id,
+            floor=request.floor,
+            date=request.date,
+            time_range=request.time_range,
+            capacity=request.capacity,
+            theme=request.theme,
+        )
+    except MeetingRoomDraftNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except MeetingRoomConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except MeetingRoomDraftStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except MeetingRoomError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get(
+    "/api/meeting-room-booking-drafts/{draft_id}/room-options"
+)
+async def meeting_room_booking_draft_options(
+    draft_id: str,
+    floor: str = Query(pattern=r"^\d+$"),
+    date: str = Query(pattern=r"^\d{4}/\d{2}/\d{2}$"),
+    time_range: str = Query(
+        alias="timeRange",
+        pattern=r"^\d{2}:\d{2}-\d{2}:\d{2}$",
+    ),
+    capacity: int = Query(default=5, ge=1, le=500),
+):
+    try:
+        await run_in_threadpool(meeting_room_store.get_draft, draft_id)
+        result = await run_in_threadpool(
+            meeting_room_store.list_rooms,
+            floor=floor,
+            date=date,
+            time_range=time_range,
+            capacity=capacity,
+        )
+        return {"rooms": result["rooms"]}
+    except MeetingRoomDraftNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except MeetingRoomError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post(
+    "/api/meeting-room-booking-drafts/{draft_id}/confirm"
+)
+async def confirm_meeting_room_booking_draft(draft_id: str):
+    try:
+        return await run_in_threadpool(
+            meeting_room_store.confirm_draft,
+            draft_id,
+        )
+    except MeetingRoomDraftNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (
+        MeetingRoomConflictError,
+        MeetingRoomDraftStateError,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except MeetingRoomNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except MeetingRoomError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/sessions/{session_id}/model-calls")

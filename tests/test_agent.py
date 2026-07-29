@@ -16,7 +16,11 @@ from pydantic import PrivateAttr
 from agent import AgentRuntime
 from conversation_store import ConversationStore
 from people_tool import PeopleStore, create_find_person_tool
-from prompts import build_current_time_context, build_system_prompt
+from prompts import (
+    SUMMARY_SYSTEM_PROMPT,
+    build_current_time_context,
+    build_system_prompt,
+)
 from meeting_room_tool import (
     MeetingRoomStore,
     SandboxMeetingRoomClient,
@@ -164,8 +168,9 @@ class AgentRuntimeTests(unittest.TestCase):
             prompt_with_tools,
         )
         self.assertIn("suggestedTimeRanges", prompt_with_tools)
-        self.assertIn("用户选择会议室只代表选中候选", prompt_with_tools)
+        self.assertIn("生成待确认预约卡片", prompt_with_tools)
         self.assertIn("本轮服务端时间上下文", prompt_with_tools)
+        self.assertIn("不得推荐或提交", prompt_with_tools)
 
     def test_runtime_registers_skill_tools_and_constraints_together(self):
         meeting_store = MeetingRoomStore(
@@ -186,8 +191,8 @@ class AgentRuntimeTests(unittest.TestCase):
             ["queryMeetingRooms", "bookMeetingRoom"],
         )
         graph_prompt = build_system_prompt(runtime.tools, runtime.skills)
-        self.assertIn("必须基于新参数重新获取确认", graph_prompt)
-        self.assertIn("不得由模型生成成功凭证", graph_prompt)
+        self.assertIn("模型也不能代替用户执行最终预约", graph_prompt)
+        self.assertIn("卡片返回真实bookingId和meetingId", graph_prompt)
 
     def test_runtime_injects_fresh_server_time_before_each_turn(self):
         model = RecordingFakeChatModel(responses=["第一轮", "第二轮"])
@@ -533,8 +538,17 @@ class AgentRuntimeTests(unittest.TestCase):
         second_summary_input = summary_model.calls[1][-1].content
         self.assertIn("已有摘要：\n第一次摘要", second_summary_input)
         self.assertIn("本次新增原始范围：第 21–40 轮", second_summary_input)
-        self.assertIn("第 21 轮用户：问题 21", second_summary_input)
-        self.assertIn("第 40 轮助手：回复 40", second_summary_input)
+        self.assertIn("第 21 轮[记录时间：", second_summary_input)
+        self.assertIn("用户：问题 21", second_summary_input)
+        self.assertIn("第 40 轮[记录时间：", second_summary_input)
+        self.assertIn("助手：回复 40", second_summary_input)
+        self.assertIn("Asia/Shanghai", second_summary_input)
+
+    def test_summary_prompt_absolutizes_relative_dates_from_message_time(self):
+        self.assertIn("该条消息自己的记录时间", SUMMARY_SYSTEM_PROMPT)
+        self.assertIn("yyyy/MM/dd", SUMMARY_SYSTEM_PROMPT)
+        self.assertIn("不得使用生成摘要时的当前时间", SUMMARY_SYSTEM_PROMPT)
+        self.assertIn("日期未确认", SUMMARY_SYSTEM_PROMPT)
 
     def test_pending_compression_never_hides_uncovered_full_rounds(self):
         chat_model = RecordingFakeChatModel(
