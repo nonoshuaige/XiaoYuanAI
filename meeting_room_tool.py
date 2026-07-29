@@ -24,23 +24,23 @@ SLOT_MINUTES = 30
 
 SANDBOX_MEETING_ROOMS = (
     {
-        "room_id": "room-501",
-        "room_name": "静思 501",
-        "floor": "5",
+        "room_id": "room-601",
+        "room_name": "静思 601",
+        "floor": "6",
         "capacity": 4,
         "equipment": ["显示屏"],
     },
     {
-        "room_id": "room-503",
-        "room_name": "协作 503",
-        "floor": "5",
+        "room_id": "room-603",
+        "room_name": "协作 603",
+        "floor": "6",
         "capacity": 10,
         "equipment": ["投影仪", "白板"],
     },
     {
-        "room_id": "room-506",
-        "room_name": "灵感 506",
-        "floor": "5",
+        "room_id": "room-606",
+        "room_name": "灵感 606",
+        "floor": "6",
         "capacity": 16,
         "equipment": ["视频会议", "白板"],
     },
@@ -66,26 +66,33 @@ SANDBOX_MEETING_ROOMS = (
         "equipment": ["投影仪", "视频会议"],
     },
     {
-        "room_id": "room-1201",
-        "room_name": "天际 1201",
-        "floor": "12",
+        "room_id": "room-801",
+        "room_name": "天际 801",
+        "floor": "8",
         "capacity": 30,
         "equipment": ["LED大屏", "视频会议", "会议电话"],
     },
     {
-        "room_id": "room-1202",
-        "room_name": "星河 1202",
-        "floor": "12",
+        "room_id": "room-802",
+        "room_name": "星河 802",
+        "floor": "8",
         "capacity": 10,
         "equipment": ["投影仪", "白板"],
+    },
+    {
+        "room_id": "room-806",
+        "room_name": "远景 806",
+        "floor": "8",
+        "capacity": 12,
+        "equipment": ["显示屏", "视频会议"],
     },
 )
 
 SAMPLE_BOOKINGS = (
-    ("room-503", "10:30", "11:30", "设计评审"),
+    ("room-603", "10:30", "11:30", "设计评审"),
     ("room-707", "09:00", "10:00", "产品周会"),
     ("room-708", "14:00", "15:30", "需求讨论"),
-    ("room-1202", "13:00", "14:00", "客户沟通"),
+    ("room-802", "13:00", "14:00", "客户沟通"),
 )
 
 

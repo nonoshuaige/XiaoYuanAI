@@ -130,7 +130,7 @@ class MeetingRoomToolTests(unittest.TestCase):
             query_tool.invoke({"date": "2026/07/28"})
         )
 
-        self.assertEqual(len(result["rooms"]), 8)
+        self.assertEqual(len(result["rooms"]), 9)
         self.assertEqual(result["scheduleWindow"], "09:00-18:00")
         self.assertEqual(result["slotMinutes"], 30)
         self.assertTrue(

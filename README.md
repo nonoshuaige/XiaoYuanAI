@@ -149,7 +149,7 @@ AgentRuntime
 ### 虚构业务沙箱
 
 仓库提供独立的 `data/sandbox.db` 沙箱，不会污染默认的
-`data/xiaoyuan.db`。运行以下命令会初始化虚构员工、8 间会议室和当日日程，并启动
+`data/xiaoyuan.db`。运行以下命令会初始化虚构员工、9 间会议室和当日日程，并启动
 网页服务：
 
 ```bash

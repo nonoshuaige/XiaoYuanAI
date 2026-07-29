@@ -75,10 +75,10 @@ class MeetingRoomSandboxApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         result = response.json()
-        self.assertEqual(len(result["rooms"]), 8)
+        self.assertEqual(len(result["rooms"]), 9)
         self.assertEqual(
             {room["floor"] for room in result["rooms"]},
-            {"5F", "7F", "12F"},
+            {"6F", "7F", "8F"},
         )
         self.assertTrue(
             all(len(room["timeline"]) == 18 for room in result["rooms"])

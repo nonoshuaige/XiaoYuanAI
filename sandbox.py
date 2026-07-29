@@ -143,7 +143,7 @@ def main() -> None:
         print(f"已写入并验证 {seeded_count} 条虚构员工数据")
     meeting_room_count = sum(
         len(meeting_room_store.list_rooms(floor=floor)["rooms"])
-        for floor in ("5", "7", "12")
+        for floor in ("6", "7", "8")
     )
     print(f"已验证 {meeting_room_count} 间虚构会议室及当日日程")
     print(f"沙箱数据库：{db_path}")
