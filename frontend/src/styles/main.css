@@ -113,14 +113,14 @@ a {
   width: 42px;
   height: 42px;
   flex: 0 0 auto;
-  display: grid;
-  place-items: center;
-  border-radius: 13px;
-  color: #fff;
-  background: var(--accent);
+  display: block;
+  border-radius: 12px;
   box-shadow: 0 8px 22px rgba(23, 107, 91, 0.2);
-  font-size: 16px;
-  font-weight: 780;
+  overflow: hidden;
+}
+
+.brand-mark .brand-icon {
+  display: block;
 }
 
 .brand-copy {
@@ -1149,7 +1149,7 @@ a {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto 1fr auto;
   overflow: hidden;
   border-right: 1px solid var(--line);
   background: #eef2ed;
@@ -1338,6 +1338,40 @@ a {
   letter-spacing: -0.02em;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.chat-header-controls {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.context-window-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.context-window-picker select {
+  height: 42px;
+  min-width: 138px;
+  padding: 0 30px 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  outline: 0;
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.context-window-picker select:focus {
+  border-color: var(--accent);
 }
 
 .model-picker {
@@ -1537,9 +1571,22 @@ a {
   justify-content: flex-end;
 }
 
-.message-bubble {
+.message-stack {
   width: fit-content;
   max-width: min(780px, 84%);
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.message-row.user .message-stack {
+  align-items: flex-end;
+}
+
+.message-bubble {
+  width: fit-content;
+  max-width: 100%;
   padding: 13px 16px;
   border: 1px solid var(--line);
   border-radius: 16px;
@@ -1548,6 +1595,13 @@ a {
   font-size: 14px;
   line-height: 1.72;
   white-space: pre-wrap;
+}
+
+.message-request-metrics {
+  padding: 0 3px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
 }
 
 .message-row.user .message-bubble {
@@ -2136,7 +2190,7 @@ a {
   }
 
   .chat-header h1 {
-    max-width: 34vw;
+    max-width: 22vw;
     margin-top: 0;
     font-size: 15px;
   }
@@ -2145,9 +2199,24 @@ a {
     display: none;
   }
 
+  .chat-header-controls {
+    gap: 6px;
+  }
+
+  .context-window-picker > span {
+    display: none;
+  }
+
+  .context-window-picker select {
+    width: 74px;
+    min-width: 74px;
+    padding-right: 6px;
+    padding-left: 7px;
+  }
+
   .model-picker-trigger {
-    min-width: 150px;
-    max-width: 42vw;
+    min-width: 126px;
+    max-width: 34vw;
   }
 
   .model-picker-menu {

@@ -1,0 +1,1 @@
+"""External employee-directory capability."""

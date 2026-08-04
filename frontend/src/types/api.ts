@@ -1,11 +1,14 @@
-export type RequestState = 'idle' | 'loading' | 'success' | 'error'
-
 export interface SessionSummary {
   sessionId: string
   title: string
   rounds: number
   created_at: string
   updated_at: string
+}
+
+export interface CurrentUser {
+  employeeId: string
+  name: string
 }
 
 export interface ChatMessage {
@@ -16,6 +19,20 @@ export interface ChatMessage {
   status: 'pending' | 'completed' | 'failed'
   error: string | null
   quickReplies: string[]
+  contextWindowTokens?: number | null
+  contextEstimatedTokens?: number | null
+  contextTruncated?: boolean
+  contextDroppedRounds?: number
+  inputTokens?: number | null
+  outputTokens?: number | null
+  totalTokens?: number | null
+  tokenUsageEstimated?: boolean
+}
+
+export interface ContextWindowOption {
+  value: number
+  label: string
+  description: string
 }
 
 export interface ModelOption {
@@ -64,15 +81,6 @@ export interface MeetingRoom {
   suggestedTimeRanges: string[]
 }
 
-export interface MeetingRoomSchedule {
-  sandbox: boolean
-  observedAt: string
-  date: string
-  displayWindow: string
-  requestedTimeRange: string | null
-  rooms: MeetingRoom[]
-}
-
 export type BookingDraftStatus = 'pending' | 'confirmed' | 'cancelled' | 'expired'
 
 export interface BookingDraft {
@@ -116,24 +124,11 @@ export interface ChatResponse {
   status: 'pending'
   title: string
   model: string
+  contextWindowTokens: number
   modelCallUrl: string
   eventsUrl: string
   artifacts: BookingDraft[]
   quickReplies: string[]
-}
-
-export interface Person {
-  employee_id: string
-  name: string
-  phone: string
-  department: string
-}
-
-export interface PersonPayload {
-  employee_id: string
-  name: string
-  phone: string
-  department: string
 }
 
 export interface BookingDraftPayload {
@@ -143,14 +138,4 @@ export interface BookingDraftPayload {
   timeRange: string
   capacity: number
   theme: string | null
-}
-
-export interface SandboxStatus {
-  sandbox: true
-  database: string
-  destinations: Array<{
-    id: 'employees' | 'meeting-rooms'
-    label: string
-    href: string
-  }>
 }

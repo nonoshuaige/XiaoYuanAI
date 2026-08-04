@@ -36,6 +36,14 @@ function context(
               status,
               error: null,
               quickReplies: [],
+              contextWindowTokens: 16_384,
+              contextEstimatedTokens: 2_048,
+              contextTruncated: false,
+              contextDroppedRounds: 0,
+              inputTokens: 2_200,
+              outputTokens: 120,
+              totalTokens: 2_320,
+              tokenUsageEstimated: false,
             },
           ]
         : []),
@@ -70,6 +78,9 @@ describe('contextMessages', () => {
       role: 'assistant',
       content: '后台回复',
       status: 'completed',
+      inputTokens: 2_200,
+      outputTokens: 120,
+      contextWindowTokens: 16_384,
     })
   })
 })

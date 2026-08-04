@@ -4,21 +4,33 @@ import type {
   BookingDraftPayload,
   ChatResponse,
   MeetingRoom,
-  MeetingRoomSchedule,
   ModelOption,
-  Person,
-  PersonPayload,
-  SandboxStatus,
   SessionContext,
   SessionSummary,
+  CurrentUser,
 } from '@/types/api'
 
 export const api = {
-  sandboxStatus: () => request<SandboxStatus>('/api/sandbox/status'),
+  currentUser: () => request<CurrentUser>('/api/current-user'),
+  resolveCurrentUser: (employeeId: string) =>
+    request<CurrentUser>('/api/current-user/resolve', {
+      method: 'POST',
+      body: JSON.stringify({ employeeId }),
+    }),
+  switchCurrentUser: (employeeId: string) =>
+    request<CurrentUser>('/api/current-user', {
+      method: 'PUT',
+      body: JSON.stringify({ employeeId }),
+    }),
   sessions: () => request<SessionSummary[]>('/api/sessions'),
   session: (id: string) => request<SessionContext>(`/api/sessions/${encodeURIComponent(id)}`),
   models: () => request<ModelOption[]>('/api/models'),
-  chat: (payload: { message: string; model: string | null; sessionId?: string }) =>
+  chat: (payload: {
+    message: string
+    model: string | null
+    contextWindowTokens: number
+    sessionId?: string
+  }) =>
     request<ChatResponse>('/api/chat', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -32,28 +44,6 @@ export const api = {
     request<{ ok: true }>(`/api/sessions/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
-  people: (search = '') =>
-    request<Person[]>(
-      `/api/sandbox/people${search ? `?search=${encodeURIComponent(search)}` : ''}`,
-    ),
-  createPerson: (payload: PersonPayload) =>
-    request<Person>('/api/sandbox/people', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
-  updatePerson: (originalId: string, payload: PersonPayload) =>
-    request<Person>(`/api/sandbox/people/${encodeURIComponent(originalId)}`, {
-      method: 'PUT',
-      body: JSON.stringify(payload),
-    }),
-  deletePerson: (id: string) =>
-    request<void>(`/api/sandbox/people/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-    }),
-  meetingRooms: (date: string) =>
-    request<MeetingRoomSchedule>(
-      `/api/sandbox/meeting-rooms?${new URLSearchParams({ date }).toString()}`,
-    ),
   bookingDraft: (id: string) =>
     request<BookingDraft>(`/api/meeting-room-booking-drafts/${encodeURIComponent(id)}`),
   updateBookingDraft: (id: string, payload: BookingDraftPayload) =>

@@ -1,12 +1,10 @@
 <script setup lang="ts">
 import {
-  PhBuildings as Buildings,
   PhChatCircleDots as ChatCircleDots,
   PhList as List,
   PhPencilSimple as PencilSimple,
   PhPlus as Plus,
   PhTrash as Trash,
-  PhUserList as UserList,
   PhX as X,
 } from '@phosphor-icons/vue'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
@@ -14,9 +12,12 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import AppBrand from '@/components/AppBrand.vue'
 import BaseDialog from '@/components/BaseDialog.vue'
 import BookingDraftCard from '@/components/BookingDraftCard.vue'
+import ContextWindowPicker from '@/components/ContextWindowPicker.vue'
+import CurrentUserSwitcher from '@/components/CurrentUserSwitcher.vue'
 import MarkdownContent from '@/components/MarkdownContent.vue'
 import ModelPicker from '@/components/ModelPicker.vue'
-import { useChatStore } from '@/stores/chat'
+import { CONTEXT_WINDOW_OPTIONS, useChatStore } from '@/stores/chat'
+import type { UiMessage } from '@/stores/chat'
 import type { SessionSummary } from '@/types/api'
 
 const store = useChatStore()
@@ -109,6 +110,43 @@ function quickRepliesAreActionable(messageIndex: number) {
   return !store.messages.slice(messageIndex + 1).some((message) => message.role === 'user')
 }
 
+const tokenFormatter = new Intl.NumberFormat('zh-CN')
+
+function formatTokens(value: number | null | undefined) {
+  return value == null ? '—' : tokenFormatter.format(value)
+}
+
+function formatUsageTokens(message: UiMessage, value: number | null | undefined) {
+  const formatted = formatTokens(value)
+  return message.tokenUsageEstimated && value != null ? `≈${formatted}` : formatted
+}
+
+function formatContextWindow(value: number | null | undefined) {
+  if (!value) return '—'
+  return value >= 1_024 ? `${Math.round(value / 1_024)}K` : String(value)
+}
+
+function hasRequestMetrics(message: UiMessage) {
+  return (
+    message.role === 'assistant' &&
+    message.status === 'completed' &&
+    (message.contextEstimatedTokens != null || message.inputTokens != null)
+  )
+}
+
+function requestMetrics(message: UiMessage) {
+  const metrics = [
+    `输入 ${formatUsageTokens(message, message.inputTokens)}`,
+    `输出 ${formatUsageTokens(message, message.outputTokens)}`,
+    `合计 ${formatUsageTokens(message, message.totalTokens)}`,
+    `上下文估算 ${formatTokens(message.contextEstimatedTokens)}/${formatContextWindow(message.contextWindowTokens)}`,
+  ]
+  if (message.contextTruncated) {
+    metrics.push(`已裁剪 ${message.contextDroppedRounds ?? 0} 轮`)
+  }
+  return metrics.join(' · ')
+}
+
 onMounted(() => void store.initialize())
 </script>
 
@@ -135,17 +173,6 @@ onMounted(() => void store.initialize())
           <X :size="19" aria-hidden="true" />
         </button>
       </div>
-
-      <nav v-if="store.sandboxEnabled" class="workspace-nav" aria-label="业务沙箱">
-        <RouterLink to="/employee-sandbox">
-          <UserList :size="18" aria-hidden="true" />
-          员工沙箱
-        </RouterLink>
-        <RouterLink to="/meeting-room-sandbox">
-          <Buildings :size="18" aria-hidden="true" />
-          会议室沙箱
-        </RouterLink>
-      </nav>
 
       <div class="session-list">
         <button
@@ -203,6 +230,7 @@ onMounted(() => void store.initialize())
           </div>
         </article>
       </div>
+      <CurrentUserSwitcher />
     </aside>
 
     <button
@@ -219,12 +247,20 @@ onMounted(() => void store.initialize())
           <span class="eyebrow">CURRENT CONVERSATION</span>
           <h1>{{ store.title }}</h1>
         </div>
-        <ModelPicker
-          :models="store.models"
-          :selected-id="store.selectedModelId"
-          :disabled="store.sending || !store.models.length"
-          @select="store.selectModel"
-        />
+        <div class="chat-header-controls">
+          <ContextWindowPicker
+            :options="CONTEXT_WINDOW_OPTIONS"
+            :selected="store.selectedContextWindowTokens"
+            :disabled="store.sending || store.waitingForAssistant"
+            @select="store.selectContextWindow"
+          />
+          <ModelPicker
+            :models="store.models"
+            :selected-id="store.selectedModelId"
+            :disabled="store.sending || !store.models.length"
+            @select="store.selectModel"
+          />
+        </div>
       </header>
 
       <section ref="messageViewport" class="message-viewport" aria-live="polite">
@@ -255,57 +291,65 @@ onMounted(() => void store.initialize())
           class="message-row"
           :class="[message.role, { failed: message.status === 'failed' }]"
         >
-          <div class="message-bubble" :class="{ 'artifact-only': message.artifacts.length }">
-            <template v-if="message.role === 'assistant'">
-              <div
-                v-if="message.activities.length"
-                class="agent-activities"
-                aria-label="Agent 执行进度"
-              >
+          <div class="message-stack">
+            <div class="message-bubble" :class="{ 'artifact-only': message.artifacts.length }">
+              <template v-if="message.role === 'assistant'">
                 <div
-                  v-for="activity in message.activities"
-                  :key="activity.id"
-                  class="agent-activity"
-                  :class="activity.status"
+                  v-if="message.activities.length"
+                  class="agent-activities"
+                  aria-label="Agent 执行进度"
                 >
-                  <span class="agent-activity-mark" aria-hidden="true"></span>
-                  <span>{{ activity.label }}</span>
+                  <div
+                    v-for="activity in message.activities"
+                    :key="activity.id"
+                    class="agent-activity"
+                    :class="activity.status"
+                  >
+                    <span class="agent-activity-mark" aria-hidden="true"></span>
+                    <span>{{ activity.label }}</span>
+                  </div>
                 </div>
-              </div>
-              <MarkdownContent
-                v-if="!message.artifacts.length && message.content.trim()"
-                :content="message.content"
-              />
-              <p v-else-if="message.content.trim().startsWith('此前还有')" class="artifact-notice">
-                {{ message.content }}
-              </p>
-              <BookingDraftCard
-                v-for="draft in message.artifacts"
-                :key="draft.draftId"
-                :draft="draft"
-                @updated="store.updateArtifact(message.key, $event)"
-              />
-              <div
-                v-if="
-                  message.quickReplies.length &&
-                  !message.artifacts.length &&
-                  quickRepliesAreActionable(messageIndex)
-                "
-                class="quick-replies"
-                aria-label="快捷回答"
-              >
-                <button
-                  v-for="reply in message.quickReplies"
-                  :key="reply"
-                  type="button"
-                  :disabled="store.sending"
-                  @click="store.send(reply)"
+                <MarkdownContent
+                  v-if="!message.artifacts.length && message.content.trim()"
+                  :content="message.content"
+                />
+                <p
+                  v-else-if="message.content.trim().startsWith('此前还有')"
+                  class="artifact-notice"
                 >
-                  {{ reply }}
-                </button>
-              </div>
-            </template>
-            <template v-else>{{ message.content }}</template>
+                  {{ message.content }}
+                </p>
+                <BookingDraftCard
+                  v-for="draft in message.artifacts"
+                  :key="draft.draftId"
+                  :draft="draft"
+                  @updated="store.updateArtifact(message.key, $event)"
+                />
+                <div
+                  v-if="
+                    message.quickReplies.length &&
+                    !message.artifacts.length &&
+                    quickRepliesAreActionable(messageIndex)
+                  "
+                  class="quick-replies"
+                  aria-label="快捷回答"
+                >
+                  <button
+                    v-for="reply in message.quickReplies"
+                    :key="reply"
+                    type="button"
+                    :disabled="store.sending"
+                    @click="store.send(reply)"
+                  >
+                    {{ reply }}
+                  </button>
+                </div>
+              </template>
+              <template v-else>{{ message.content }}</template>
+            </div>
+            <small v-if="hasRequestMetrics(message)" class="message-request-metrics">
+              {{ requestMetrics(message) }}
+            </small>
           </div>
         </article>
       </section>

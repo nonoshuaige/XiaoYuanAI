@@ -5,6 +5,7 @@ import { api } from '@/api'
 import type {
   BookingDraft,
   ChatMessage,
+  ContextWindowOption,
   ModelOption,
   SessionContext,
   SessionSummary,
@@ -12,7 +13,23 @@ import type {
 
 const CURRENT_SESSION_KEY = 'xiaoyuan-current-session'
 const SELECTED_MODEL_KEY = 'xiaoyuan-selected-model'
+const SELECTED_CONTEXT_WINDOW_KEY = 'xiaoyuan-context-window'
 const CHAT_POLL_INTERVAL_MS = 1_200
+
+export const CONTEXT_WINDOW_OPTIONS: ContextWindowOption[] = [
+  { value: 8_192, label: '8K', description: '短对话验证' },
+  { value: 16_384, label: '16K', description: '日常推荐' },
+  { value: 32_768, label: '32K', description: '长对话' },
+  { value: 65_536, label: '64K', description: '超长上下文' },
+]
+const DEFAULT_CONTEXT_WINDOW = 16_384
+
+function storedContextWindow() {
+  const value = Number(localStorage.getItem(SELECTED_CONTEXT_WINDOW_KEY))
+  return CONTEXT_WINDOW_OPTIONS.some((option) => option.value === value)
+    ? value
+    : DEFAULT_CONTEXT_WINDOW
+}
 
 export interface UiMessage extends ChatMessage {
   key: string
@@ -96,11 +113,11 @@ export const useChatStore = defineStore('chat', () => {
   const messages = ref<UiMessage[]>([])
   const currentSessionId = ref<string | null>(localStorage.getItem(CURRENT_SESSION_KEY))
   const selectedModelId = ref<string | null>(localStorage.getItem(SELECTED_MODEL_KEY))
+  const selectedContextWindowTokens = ref(storedContextWindow())
   const title = ref('新对话')
   const loading = ref(true)
   const sending = ref(false)
   const error = ref('')
-  const sandboxEnabled = ref(false)
   let pollTimer: ReturnType<typeof setTimeout> | null = null
   let eventSource: EventSource | null = null
   let eventSourceKey = ''
@@ -118,14 +135,9 @@ export const useChatStore = defineStore('chat', () => {
     loading.value = true
     error.value = ''
     try {
-      const [modelCatalog, sessionCatalog, sandbox] = await Promise.all([
-        api.models(),
-        api.sessions(),
-        api.sandboxStatus().catch(() => null),
-      ])
+      const [modelCatalog, sessionCatalog] = await Promise.all([api.models(), api.sessions()])
       models.value = modelCatalog.filter((model) => model.callable)
       sessions.value = sessionCatalog
-      sandboxEnabled.value = Boolean(sandbox)
 
       if (!models.value.length) throw new Error('没有已配置且可调用的模型')
       const preferred =
@@ -149,6 +161,12 @@ export const useChatStore = defineStore('chat', () => {
   function selectModel(id: string) {
     selectedModelId.value = id
     localStorage.setItem(SELECTED_MODEL_KEY, id)
+  }
+
+  function selectContextWindow(tokens: number) {
+    if (!CONTEXT_WINDOW_OPTIONS.some((option) => option.value === tokens)) return
+    selectedContextWindowTokens.value = tokens
+    localStorage.setItem(SELECTED_CONTEXT_WINDOW_KEY, String(tokens))
   }
 
   function newConversation() {
@@ -448,9 +466,15 @@ export const useChatStore = defineStore('chat', () => {
     messages.value.push(pending)
 
     try {
-      const payload: { message: string; model: string | null; sessionId?: string } = {
+      const payload: {
+        message: string
+        model: string | null
+        contextWindowTokens: number
+        sessionId?: string
+      } = {
         message: text,
         model: selectedModelId.value,
+        contextWindowTokens: selectedContextWindowTokens.value,
         sessionId: targetSessionId,
       }
       const result = await api.chat(payload)
@@ -532,15 +556,16 @@ export const useChatStore = defineStore('chat', () => {
     messages,
     currentSessionId,
     selectedModelId,
+    selectedContextWindowTokens,
     selectedModel,
     waitingForAssistant,
     title,
     loading,
     sending,
     error,
-    sandboxEnabled,
     initialize,
     selectModel,
+    selectContextWindow,
     newConversation,
     loadSession,
     send,

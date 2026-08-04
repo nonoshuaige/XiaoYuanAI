@@ -1,22 +1,23 @@
 # 小原 AI 助手 2.0
 
 小原 AI 助手是一个面向中文办公场景的单 Agent 对话应用。项目以稳定的多轮对话
-为核心，提供多会话管理、SQLite 全量持久化、滚动摘要、多模型发现与切换，以及
+为核心，提供多会话管理、MySQL 全量持久化、滚动摘要、多模型发现与切换，以及
 按需加载的模型运行时。模型调用同时保留 Provider 原始响应与 LangChain 转换后的
 `AIMessage`，用于本地开发和问题调试。
 
-当前版本始终加载“找人”“查询会议室”和“预约会议室”Tool；通过沙箱启动时额外
-提供可直接验证数据库写入结果的员工与会议室操作页面。
+当前版本始终加载“找人”“查询/预约会议室”和“查询/提交/撤销请假”Tool。业务 Tool
+统一调用本机 `mock-sandbox:18080`，会话、草稿和审计数据统一持久化到 MySQL。
 
 ## 项目能力
 
 | 模块 | 当前能力 |
 |---|---|
 | Agent 运行时 | LangChain `create_agent`，结构化 System Prompt，并为会议室 Skill 注入工作流约束 |
-| 找人工具 | 工号 > 手机号 > 姓名主查询，全部线索一致性校验，重名候选消歧 |
-| 会议室 Skill | 支持当前半小时即时预约、结构化草稿卡片、人工确认/取消和确认前冲突重查 |
-| 会议室日程沙箱 | Vue 按日期、楼层和房间展示 09:00–18:00 半小时日程 |
-| 上下文管理 | 固定系统规则 + 实时时间/预约卡片状态 + 用户层历史摘要 + 未覆盖原文 + 当前问题 |
+| 找人工具 | 调用 Mock Sandbox 通讯录 search；工号 > 手机号 > 姓名主查询，全部线索一致性校验 |
+| 会议室 Skill | 调用 Mock Sandbox search/book；支持结构化草稿卡片、人工确认和确认前冲突重查 |
+| 请假 Skill | 查询年休假/事假余额，明确确认后提交申请，并可按 requestId 确认撤销 |
+| 上下文管理 | 8K/16K/32K/64K 可选预算；固定规则 + 实时时间/卡片状态 + 摘要 + 按轮裁剪的近期原文 + 当前问题 |
+| Token 统计 | 每轮汇总 Agent 内全部模型步骤的输入、输出和总 Token，并在回复下方展示 |
 | 快捷回答 | 候选收敛为 2–4 个明确选项时，展示当前轮可直接发送的临时回答按钮 |
 | 长对话压缩 | 30/20/10 滚动摘要，后台异步生成，保留全量原文 |
 | 会话管理 | 新建、切换、自动命名、重命名、删除、多会话隔离 |
@@ -25,7 +26,7 @@
 | 模型加载 | 按 model ID 首次使用时加载，模型实例与 Agent graph 进程内缓存 |
 | 本地模型 | 自动发现本机 Ollama 模型，通过 OpenAI 兼容接口调用 |
 | 模型调用调试 | 对照保存 Provider 完整 HTTP 响应和 LangChain `AIMessage` |
-| 数据存储 | SQLite + WAL，聊天记录、轮次、模型调试记录、摘要版本永久保存 |
+| 数据存储 | MySQL 8 + InnoDB，连接池、版本化迁移和全量历史永久保存 |
 | Web 服务 | FastAPI JSON API + Vue 3、Vite、TypeScript 单页应用 |
 
 ## 仓库定位
@@ -52,13 +53,13 @@ npm install
 npm run build
 cd ..
 
-python server.py
+python -m app.main
 ```
 
 浏览器访问 <http://localhost:8000>。
 
 上述是日常运行/生产方式：`npm run build` 只需在首次安装或前端源码发生变化后执行；
-构建完成后，FastAPI 会直接提供 Vue 静态资源，因此平时只需要启动 `python server.py`，
+构建完成后，FastAPI 会直接提供 Vue 静态资源，因此平时只需要启动 `python -m app.main`，
 不需要额外常驻 Vite 进程。
 
 ### 模型配置
@@ -82,10 +83,33 @@ OLLAMA_API_BASE=http://127.0.0.1:11434/v1/
 
 # 可选；未配置或不可用时回退到第一个可调用模型
 DEFAULT_MODEL_ID=qwen3-coder-plus
+
+# MySQL 8+
+XIAOYUAN_MYSQL_HOST=127.0.0.1
+XIAOYUAN_MYSQL_PORT=3306
+XIAOYUAN_MYSQL_USER=root
+XIAOYUAN_MYSQL_PASSWORD=
+XIAOYUAN_MYSQL_DATABASE=xiaoyuan_ai
+XIAOYUAN_MYSQL_POOL_SIZE=10
+
+# 本地企业接口测试沙箱
+XIAOYUAN_MOCK_SANDBOX_URL=http://127.0.0.1:18080
+XIAOYUAN_MOCK_SANDBOX_TIMEOUT=5
+# 前端首次打开时使用的默认用户；可在聊天页左下角按工号切换
+XIAOYUAN_MOCK_USER_ID=160218
+XIAOYUAN_MOCK_USER_NAME=程少伟
 ```
 
 `.env` 已被 `.gitignore` 排除，不会提交到 Git。Python OpenAI 客户端使用的
-`base_url` 通常需要包含 `/v1` 路径前缀。
+`base_url` 通常需要包含 `/v1` 路径前缀。应用现在把 Mock Sandbox 作为就绪依赖，
+启动 XiaoYuanAI 前应确保本地服务可访问：
+
+```bash
+curl http://127.0.0.1:18080/api/ready
+```
+
+聊天页左下角会显示当前 Mock 用户。更换用户时只需输入工号；后端会通过 person
+员工通讯录查询姓名并再次校验，姓名不能由前端编辑，通讯录中不存在的工号不会生效。
 
 ## 总体架构
 
@@ -104,43 +128,48 @@ FastAPI API 与前端构建产物
   └── 可重连的 Agent SSE 事件流
         │
         ▼
-SQLite pending 轮次 + 后台 ChatJobManager
+MySQL pending 轮次 + 后台 ChatJobManager
         │
         ▼
 AgentRuntime
   │
   ├── 按 model ID 加载并缓存模型/graph
   ├── 按 session 串行执行对话轮次
-  ├── 从 SQLite 重建模型上下文
+  ├── 从 MySQL 重建模型上下文
   ├── 记录 Provider 响应与 LangChain 转换结果，供调试对照
   ├── 按需调用当前环境实际注册的工具
   └── 提交异步摘要任务
         │
         ├── OpenAI 兼容模型服务
-        └── SQLite 会话、通讯录与沙箱会议室存储
+        ├── Mock Sandbox :18080
+        │     ├── 通讯录 search
+        │     ├── 会议室 selectMeet / create
+        │     └── 请假余额 / 申请 / 撤销
+        └── MySQL 会话、预约草稿与审计存储
 ```
 
 ## Agent 运行时
 
-主链位于 `agent.py`，System Prompt 及其动态构建逻辑位于 `prompts.py`。普通环境
-与沙箱环境注册相同的“找人、查询会议室、预约会议室”工具列表：
+主链位于 `app/agent/runtime.py`，System Prompt 及其动态构建逻辑位于
+`app/agent/prompts.py`。运行时通过外部企业接口统一注册“找人、查询/预约会议室、
+查询/提交/撤销请假”能力，本地不再维护员工或会议室数据：
 
 ```text
 收到用户问题
   → 前端预生成 sessionId，用户消息和所选 model ID 落库
   → 轮次标记为 pending，HTTP 立即返回 202
   → 后台 ChatJobManager 领取任务
-  → 从 SQLite 读取最新摘要和未覆盖原文
+  → 从 MySQL 读取最新摘要和未覆盖原文
   → 构建本次临时消息 State
   → 流式调用选中的模型，按需执行工具
-  → 文本增量和工具生命周期事件先写 SQLite，再通过 SSE 推送
+  → 文本增量和工具生命周期事件先写 MySQL，再通过 SSE 推送
   → 保存 Provider 响应、完整 AIMessage 和 assistant 回复
   → 轮次标记为 completed
   → 前端收到 completed 事件后用完整会话记录校准卡片和快捷回答
   → 必要时提交后台摘要任务
 ```
 
-用户切换会话、离开聊天页或刷新不会取消后台任务。前端重新进入会话时从 SQLite
+用户切换会话、离开聊天页或刷新不会取消后台任务。前端重新进入会话时从 MySQL
 恢复 pending 轮次，并重新连接该轮 SSE；服务端按事件 ID 重放尚未展示的状态、文本
 增量和工具调用进度。SSE 断流时浏览器会自动重连，并以会话轮询作为兜底。服务重启
 时会扫描持久化 pending 轮次并重新提交。
@@ -158,94 +187,46 @@ AgentRuntime
 
 ## 找人工具
 
-工具 API 名为 `find_person`，中文能力名为“找人”。员工目录保存在现有 SQLite
-数据库的 `people` 表中：
+工具 API 名为 `find_person`，中文能力名为“找人”。Agent 通过
+`/api/eop-olk/api/v2/addressbook/search` 查询 18080 测试沙箱，并把兼容接口字段映射为：
 
-| 字段 | SQLite 列 | 约束 |
+| 字段 | Tool 字段 | 约束 |
 |---|---|---|
-| 工号 | `employee_id` | 主键 |
-| 姓名 | `name` | 必填，可重名 |
-| 手机号 | `phone` | 必填、唯一 |
-| 部门 | `department` | 必填 |
+| 工号 | `employee_id` | 对应 `loginCode` |
+| 姓名 | `name` | 可重名 |
+| 手机号 | `phone` | 优先取兼容接口可用电话字段 |
+| 部门 | `department` | 对应 `orgName/orgFullName` |
 
 用户至少需要明确提供工号、手机号或姓名中的一项。若同时提供多项，工具按
 `工号 > 手机号 > 姓名` 选择主查询字段，再用其余身份线索和部门校验结果；线索不一致
 时返回冲突状态，不返回某位员工。工号、手机号、姓名均为精确匹配。姓名查询得到多人时，
 工具返回候选而不是擅自选择。
 
-生产 Agent 首次初始化时会自动建表，但不会写入虚构员工。同步员工数据时可调用
-`PeopleStore.upsert(...)`；之后 Agent 即可查询同一数据库中的记录。
+本项目不建员工表、不缓存通讯录结果，也不提供员工 CRUD 页面。员工数据的唯一事实来源
+是外部接口。
 
-### 虚构业务沙箱
+### 外部测试沙箱
 
-沙箱模式与普通模式共用 `data/xiaoyuan.db`。它只控制聊天页左上角是否显示
-“员工沙箱”和“会议室沙箱”入口，以及对应页面/API 是否开放，不再切换整套数据库。
-员工、会议室、预约、会话、摘要和模型审计记录全部保存在同一个数据库中。
-
-正常模式启动在 8000 端口，聊天页不会显示业务沙箱入口：
+本地 `mock-sandbox` 是独立服务，默认监听 18080。XiaoYuanAI 只通过 HTTP 访问它，不导入
+其数据库、种子数据或页面。启动 XiaoYuanAI：
 
 ```bash
 /Users/zypro/Desktop/pythonenv/envs/XiaoYuan/bin/python -m uvicorn \
-  server:app --host 127.0.0.1 --port 8000
-```
-
-需要同时查看沙箱时，可另开终端在 8001 端口启动沙箱模式。它会显示员工和会议室
-沙箱入口；如果统一数据库是首次创建，还会幂等写入 10 条虚构员工记录，并初始化
-6F/7F/8F 共 9 间会议室和当日示例日程：
-
-```bash
-/Users/zypro/Desktop/pythonenv/envs/XiaoYuan/bin/python sandbox.py --port 8001
-```
-
-此时正常模式访问 <http://127.0.0.1:8000>，沙箱模式访问
-<http://127.0.0.1:8001>，两者共同读写 `data/xiaoyuan.db`。只初始化和验证数据、
-不启动服务：
-
-```bash
-/Users/zypro/Desktop/pythonenv/envs/XiaoYuan/bin/python sandbox.py --seed-only
+  app.main:app --host 127.0.0.1 --port 8000
 ```
 
 可用示例问题：
 
-- `帮我找工号 XY-S003`
-- `手机号 13800000004 是谁？`
-- `帮我找研发部的陈晨`
-- `帮我找张三`（会返回研发部和财务部两位候选）
-- `找工号 XY-S003、手机号 13800000001、姓名张三`（会提示线索冲突）
+- `帮我找工号 160218`
+- `查一下 7 楼明天下午两点可用的会议室`
+- `查询我的年休假余额`
 
-沙箱仍会使用 `.env` 中配置的模型服务。`XIAOYUAN_DB_PATH` 若已配置，会同时作用于
-普通模式和沙箱模式；`sandbox.py` 不会再覆盖它。升级后首次启动沙箱模式时，程序会
-将旧 `data/sandbox.db` 中的业务数据，以及旧 `data/meeting-room-demo.db` 中的
-会议室和预约，一次性安全合并到默认的 `data/xiaoyuan.db`。校验无冲突并记录迁移
-状态后，两个旧库都不再参与运行。
-
-启动后可从聊天页侧栏进入“员工沙箱”，也可以直接访问
-<http://127.0.0.1:8001/employee-sandbox>。页面支持查看、搜索、新增、编辑和删除，
-每次操作都会立即写入统一 SQLite 数据库的 `people` 表。仅在统一数据库文件首次创建
-时写入初始虚构数据，因此页面修改和删除（包括删除全部员工）在服务重启后仍会保留。
-
-会议室页面可直接访问 <http://127.0.0.1:8001/meeting-room-sandbox>。页面是只读
-日程沙箱：顶部选择日期，下方按楼层展示全部会议室；点击房间可查看 09:00–18:00、
-每半小时一段的真实预约状态。页面不创建预约，Agent 的预约结果仍以服务端 Tool
-生成的结构化预约草稿卡片为准。
-
-员工沙箱 API：
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| `GET` | `/api/sandbox/status` | 检查当前服务是否为沙箱模式 |
-| `GET` | `/api/sandbox/people` | 获取员工列表，支持 `search` 查询 |
-| `POST` | `/api/sandbox/people` | 新增员工 |
-| `PUT` | `/api/sandbox/people/{employeeId}` | 更新员工全部字段 |
-| `DELETE` | `/api/sandbox/people/{employeeId}` | 删除员工 |
-| `GET` | `/api/sandbox/meeting-rooms` | 查询会议室与指定日期日程 |
-| `POST` | `/api/sandbox/meeting-room-bookings` | 校验冲突并创建预约 |
-
-上述页面与 API 只在通过 `sandbox.py` 启动时开放；普通生产启动返回 404。
+项目不再携带 SQLite 数据文件和一次性迁移脚本。MySQL 中仅保留当前 Agent 生成的预约
+确认草稿；员工、房间库存和预约事实始终以 18080 返回为准。
 
 Agent 始终注册：
 
-- `find_person` Tool：按工号、手机号或姓名查询员工。
+- `find_person` Tool：调用通讯录 search，按工号、手机号或姓名查询员工。
 - `meeting-room-booking` Skill：集中管理会议室参数收集、相对日期解析、查询、
   候选选择、明确确认和预约结果校验。
   - `queryMeetingRooms` Tool：楼层、房间、日期或时间任一线索都可发起查询；返回
@@ -254,6 +235,11 @@ Agent 始终注册：
     模型不得用 Markdown 表格或普通文本模拟卡片。只有用户点击卡片“保存并预约”后，
     服务端才会重新查询冲突并创建真实预约。用户未提供主题时由服务端使用可信预约人
     生成“XXX预约的会议”，模型不猜姓名。
+- `leave-request` Skill：集中管理余额查询、请假申请和撤销确认。
+  - `queryLeaveBalance` Tool：获取当前沙箱用户的年休假、事假类型和剩余天数。
+  - `applyLeave` Tool：只接受年休假或事假；必须收齐日期、全天/上午/下午和事由，并在
+    用户明确确认后提交，返回真实 `requestId`。
+  - `cancelLeave` Tool：必须使用真实 `requestId`，并在用户明确确认撤销后调用。
 
 当天预约允许从当前所在的半小时槽即时生效。例如服务端时间为 15:32 时，可以预约
 15:30 开始、尚未结束且没有冲突的时段；15:00 等当前半小时槽之前的开始时间仍会被
@@ -267,7 +253,7 @@ Agent 始终注册：
 
 ## 上下文管理
 
-SQLite 是持久化事实来源。每次聊天请求都会重新构建临时消息 State，不依赖进程
+MySQL 是持久化事实来源。每次聊天请求都会重新构建临时消息 State，不依赖进程
 内的历史消息缓存。
 
 模型实际收到的上下文顺序为：
@@ -296,7 +282,7 @@ HumanMessage
 “今天”“明天”“后天”等相对日期换算为会议室接口需要的 `yyyy/MM/dd`；不会用来
 猜测用户没有提供的预约参数。用户只说时间时可跨楼层查询，只说房间时可查看该房间
 日程；真正预约仍要求具体房间、日期、时段和明确确认。预约草稿状态同样在每轮调用前
-从 SQLite 重新读取，因此无论卡片是否确认、取消或过期，后续 LLM 都能感知最新状态；
+从 MySQL 重新读取，因此无论卡片是否确认、取消或过期，后续 LLM 都能感知最新状态；
 状态上下文不授予模型替用户确认或取消的权限。
 
 ### 权限边界
@@ -311,7 +297,7 @@ System Prompt，也不能覆盖系统规则或成为外部操作授权。
 
 ### 当前问题不会重复
 
-当前用户问题会先写入 SQLite，但读取历史上下文时只读取到上一轮，再单独追加当前
+当前用户问题会先写入 MySQL，但读取历史上下文时只读取到上一轮，再单独追加当前
 问题。因此同一问题在模型输入中只出现一次。
 
 ## 会话与轮次
@@ -330,7 +316,7 @@ System Prompt，也不能覆盖系统规则或成为外部操作授权。
 | `completed` | 用户消息和助手回复均已保存 |
 | `failed` | 用户消息已保存，但模型没有生成可用回复 |
 
-删除会话时，SQLite 外键会级联删除轮次、聊天消息和全部摘要版本。
+删除会话时，MySQL 外键会级联删除轮次、聊天消息和全部摘要版本。
 
 每轮 Agent 事件保存在 `chat_events` 表，事件类型包括 `status`、`reset`、
 `text_delta`、`tool_start`、`tool_end`、`completed` 和 `failed`。文本直答会逐段
@@ -358,12 +344,12 @@ System Prompt，也不能覆盖系统规则或成为外部操作授权。
    `content`、`additional_kwargs`、`response_metadata`、`usage_metadata`、
    `id`、tool calls 和 Provider 放入消息中的 reasoning 扩展字段。
 
-成功轮次把模型调试记录、assistant 正文和 `completed` 状态放在同一个 SQLite 事务中；
+成功轮次把模型调试记录、assistant 正文和 `completed` 状态放在同一个 MySQL 事务中；
 失败轮次也会保存调用期间已经收到的 Provider 响应，并将 LangChain 消息记为
 `null`。历史版本中已经发生的调用无法反向恢复原始 Provider 响应，调试记录从升级后的
 新调用开始记录。
 
-调试记录默认开启，保存在本机 `data/xiaoyuan.db`，不会提交到 Git。原始响应可能
+调试记录默认开启，保存在 MySQL 的 `model_call_audits` 表。原始响应可能
 包含模型 reasoning 和 Provider 基础设施信息，应按调试数据管理，不要直接公开。
 删除会话时，对应的模型调用调试记录会一并级联删除。
 
@@ -403,7 +389,7 @@ curl http://127.0.0.1:8000/api/sessions/<sessionId>/rounds/<round>/model-call
 
 ## 模型目录与切换
 
-模型配置位于 `config.py`。
+模型配置位于 `app/providers/config.py`。
 
 ### Provider 展示规则
 
@@ -456,9 +442,11 @@ ollama pull qwen3.5:9b
 本地模型在 API 中使用 `ollama::<模型名>` 作为选择 ID，避免与远程 Provider 的
 同名模型冲突；实际发送给 Ollama 的仍是原始模型名。
 
-## SQLite 持久化
+## MySQL 持久化
 
-数据库默认位于 `data/xiaoyuan.db`，启用外键和 WAL 模式。
+默认连接本机 `127.0.0.1:3306/xiaoyuan_ai`，使用 InnoDB、`utf8mb4`、外键和进程内
+连接池。`app/persistence/migrations/mysql/` 保存按文件名排序的版本化 DDL，启动时自动应用尚未执行的
+迁移并记录到 `schema_migrations`。
 
 | 表 | 用途 |
 |---|---|
@@ -467,11 +455,9 @@ ollama pull qwen3.5:9b
 | `model_call_audits` | 调试用 model ID、Provider 原始响应、完整 `AIMessage` 和调用状态 |
 | `chat_messages` | 所有 user/assistant 原文，以及助手消息的快捷回答选项 |
 | `conversation_summaries` | 累计摘要正文、覆盖范围和历史版本 |
-| `people` | 员工目录（工号、姓名、手机号、部门） |
-| `meeting_rooms` | 会议室 ID、名称、楼层、容量和设备 |
-| `meeting_room_bookings` | 预约日期、时段、主题、预约来源和创建时间 |
 | `meeting_room_booking_drafts` | 预约草稿参数、所属会话/轮次、状态、有效期和最终预约凭证 |
 | `app_metadata` | 一次性数据库迁移状态（需要时自动创建） |
+| `schema_migrations` | 已执行的 MySQL DDL 版本 |
 
 `chat_messages` 使用 `(session_id, round_no, role)` 作为复合主键。摘要只影响模型
 上下文的构建方式，不会删除或改写完整聊天记录。
@@ -479,13 +465,11 @@ ollama pull qwen3.5:9b
 ## Vue 前端
 
 前端源码位于 `frontend/`，使用 Vue 3、Vite、TypeScript、Vue Router 和 Pinia。
-三个原有页面被统一为一个 SPA，并保持原 URL：
+本地只提供 Agent 对话页面：
 
 | URL | Vue 页面 |
 |---|---|
 | `/` | 对话、模型和会话管理 |
-| `/employee-sandbox` | 员工目录 CRUD |
-| `/meeting-room-sandbox` | 会议室只读日程 |
 
 聊天页面包含：
 
@@ -501,21 +485,21 @@ ollama pull qwen3.5:9b
 - 可编辑、可取消、可过期、需要人工确认的会议室预约卡片；
 - 候选收敛后的快捷回答按钮，点击后直接作为下一条用户消息发送。
 
-浏览器只保存当前 `sessionId` 和选中的 model ID，消息正文以 SQLite 为唯一来源。
+浏览器只保存当前 `sessionId` 和选中的 model ID，消息正文以 MySQL 为唯一来源。
 
 只有开发和调试 Vue 源码、需要热更新时，才需要让 FastAPI 与 Vite 两个进程同时运行。
 Vite 会把 `/api` 代理到 FastAPI：
 
 ```bash
 # 终端一
-python server.py
+python -m app.main
 
 # 终端二
 cd frontend
 npm run dev
 ```
 
-访问 <http://127.0.0.1:5173>。生产运行前执行 `npm run build`，FastAPI 会从
+访问 <http://127.0.0.1:5174>。生产运行前执行 `npm run build`，FastAPI 会从
 `frontend/dist` 提供入口和带哈希的静态资源。可通过 `XIAOYUAN_FRONTEND_DIST`
 覆盖构建目录。
 
@@ -544,7 +528,8 @@ npm run dev
 ```json
 {
   "message": "帮我整理今天的会议纪要",
-  "model": "qwen3d6-27b"
+  "model": "qwen3d6-27b",
+  "contextWindowTokens": 16384
 }
 ```
 
@@ -554,7 +539,8 @@ npm run dev
 {
   "message": "再精简一点",
   "sessionId": "服务返回的会话 ID",
-  "model": "qwen3-coder-plus"
+  "model": "qwen3-coder-plus",
+  "contextWindowTokens": 8192
 }
 ```
 
@@ -568,6 +554,7 @@ npm run dev
   "status": "pending",
   "title": "自动或手动会话标题",
   "model": "实际使用的 model ID",
+  "contextWindowTokens": 16384,
   "modelCallUrl": "/api/sessions/会话 ID/rounds/1/model-call",
   "artifacts": [],
   "quickReplies": []
@@ -579,36 +566,47 @@ npm run dev
 当作预约卡片。`quickReplies` 为 2–4 个可以直接作为用户回答发送的临时短选项；
 用户点击或发送新消息后不再显示历史选项。
 
+会话消息同时返回 `inputTokens`、`outputTokens`、`totalTokens`、
+`contextEstimatedTokens`、`contextWindowTokens`、`contextTruncated` 和
+`contextDroppedRounds`。Token 用量优先取模型返回的真实 usage；流式 Provider 不返回
+usage 时使用本地混合中英文计数并在界面标记 `≈`。上下文规模是发送前的估算值，用于
+判断所选预算是否合适。裁剪始终按完整轮次从最旧内容开始，不会
+拆散一轮用户/助手消息，也不会裁掉当前问题、实时规则或工具定义。
+若一轮内发生 Tool 调用，`inputTokens` 是这一轮所有模型调用输入量的累计值，而
+`contextEstimatedTokens/contextWindowTokens` 描述首次模型调用的上下文规模与预算；
+因此前者可能高于后者，这不表示某一次请求已经突破上下文上限。
+
 ## 项目结构
 
 ```text
 .
-├── agent.py                 # Agent 运行时、上下文重建、模型 graph 缓存、异步摘要
-├── chat_jobs.py             # 持久化 pending 轮次的后台 LLM 任务调度
-├── config.py                # Provider 配置、模型发现、目录状态和模型创建
-├── conversation_store.py    # SQLite schema、会话、轮次、消息和摘要持久化
-├── model_audit.py           # Provider HTTP 捕获与 AIMessage 完整序列化
-├── meeting_room_tool.py     # 会议室 SQLite、客户端适配器和两个 Agent Tool
-├── server.py                # FastAPI 页面与 JSON API
-├── sandbox.py               # 统一数据库迁移、虚构业务数据与沙箱入口
+├── app/
+│   ├── main.py              # FastAPI 组合根、页面与 JSON API
+│   ├── agent/               # Agent 运行时、Prompt、Skill 协议和后台任务
+│   ├── features/            # 按业务域组织的 Skill、Tool 与领域逻辑
+│   │   ├── people/          # 找人 Tool
+│   │   ├── meeting_room/    # 会议室 Skill、Tool、领域模型、Gateway 和草稿仓储
+│   │   └── leave/           # 请假 Skill 与 Tool
+│   ├── integrations/
+│   │   └── mock_sandbox/    # 18080 HTTP 客户端、配置和统一错误映射
+│   ├── persistence/         # MySQL 连接池、会话仓储和版本化迁移
+│   │   └── migrations/mysql/
+│   └── providers/           # 模型 Provider 配置、发现与调用审计
 ├── frontend/
 │   ├── src/api/             # 类型化 FastAPI 客户端
 │   ├── src/components/      # 品牌、弹窗、状态和预约卡片组件
-│   ├── src/router/          # 三个页面的客户端路由
+│   ├── src/router/          # Agent 对话页客户端路由
 │   ├── src/stores/          # Pinia 聊天和会话状态
 │   ├── src/styles/          # 统一设计系统与响应式样式
-│   ├── src/views/           # 聊天、员工和会议室页面
+│   ├── src/views/           # Agent 对话页面
 │   ├── package.json         # 前端依赖、构建和测试脚本
 │   └── vite.config.ts       # Vite 构建及开发代理
 ├── tests/
-│   ├── test_agent.py        # 会话、上下文、失败恢复、摘要和懒加载测试
-│   ├── test_people_tool.py  # 找人主查询、线索冲突、消歧和 Tool 输出测试
-│   ├── test_employee_sandbox_api.py # 员工沙箱页面与 CRUD API 测试
-│   ├── test_meeting_room_tool.py # 会议室查询、确认、重查与冲突测试
-│   ├── test_meeting_room_sandbox_api.py # 会议室只读页面和沙箱 API 测试
-│   ├── test_sandbox.py      # 虚构数据、旧库迁移与统一数据库测试
-│   ├── test_config.py       # Provider、模型目录和模型选择测试
-│   └── test_model_audit.py  # Provider 原始响应与 AIMessage 序列化测试
+│   ├── agent/               # 会话、上下文、失败恢复、摘要和任务调度测试
+│   ├── api/                 # FastAPI 聊天接口测试
+│   ├── features/            # 找人、会议室等业务域测试
+│   ├── integrations/        # 18080 字段映射、请求体和人工确认边界测试
+│   └── providers/           # Provider 配置、模型发现和调用审计测试
 ├── .env.example             # Provider 配置示例
 ├── requirements.txt         # Python 依赖
 └── README.md
@@ -632,7 +630,7 @@ npm run build
 
 - 首次发送后才创建会话；
 - 会话隔离、重命名和删除；
-- SQLite 重启恢复全量记录；
+- MySQL 重启恢复全量记录；
 - 用户消息先落库及失败轮次保留；
 - SSE 文本增量、工具生命周期、完成事件及持久化重放；
 - Provider 完整 HTTP 响应与 LangChain `AIMessage` 持久化；
@@ -642,15 +640,19 @@ npm run build
 - 模型切换及未知模型拒绝；
 - Provider 未配置时不出现在目录；
 - 模型实例和 Agent graph 按需加载并复用。
+- 上下文预算校验、按完整轮次裁剪及多步骤模型 Token usage 汇总。
 - Ollama 模型自动发现、Provider 隔离和本地 OpenAI 兼容地址。
 - Vue API 错误归一化、日期边界和生产构建。
+- Mock Sandbox 找人、会议室和请假协议映射，以及会议室确认前零远端写入。
 
 ## 当前边界
 
 当前版本仍有以下明确边界：
 
-- 会议室 Tool 当前使用本地存储适配器，尚未接企业真实接口和认证；
-- 30/20/10 是轮次策略，尚未实现 Token 软阈值和硬上限；
+- 业务 Tool 当前接入的是本机 Mock Sandbox，尚未接企业生产认证、签名和真实网关；
+- 会议室已具备前端人工确认卡片；请假提交/撤销目前依赖对话内的显式确认约束，尚无独立
+  前端审批卡片；
+- 30/20/10 仍负责异步摘要；首次模型输入另受用户选择的估算 Token 预算限制；
 - 摘要尚未记录 prompt 版本、模型、source hash 和 token 用量；
 - session 串行锁只在单个 Python 进程内有效；
 - 默认面向本地使用，尚未实现用户认证、租户隔离和限流；
@@ -660,4 +662,4 @@ npm run build
 
 ## 版本
 
-当前版本：**2.1 持久化后台 Agent 与可回放 SSE**
+当前版本：**2.3 上下文预算与 Token 可观测性**
