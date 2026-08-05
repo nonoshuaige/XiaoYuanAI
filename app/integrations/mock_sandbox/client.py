@@ -53,8 +53,8 @@ class MockSandboxSettings:
         return cls(
             base_url=base_url,
             timeout_seconds=timeout,
-            user_id=os.getenv("XIAOYUAN_MOCK_USER_ID", "160218").strip(),
-            user_name=os.getenv("XIAOYUAN_MOCK_USER_NAME", "程少伟").strip(),
+            user_id=os.getenv("XIAOYUAN_MOCK_USER_ID", "000328").strip(),
+            user_name=os.getenv("XIAOYUAN_MOCK_USER_NAME", "郑子涵").strip(),
         )
 
 

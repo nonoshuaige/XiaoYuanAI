@@ -72,6 +72,10 @@ class PeopleToolTests(unittest.TestCase):
         result = find_person.invoke({"employee_id": " 160218 "})
 
         self.assertEqual(find_person.name, "find_person")
+        self.assertIn("查询员工人事信息", find_person.description)
+        self.assertIn("如果都没有，先引导用户补充", find_person.description)
+        self.assertIn("必须展示全部 people 及匹配来源", find_person.description)
+        self.assertIn("status=not_found，表示该线索", find_person.description)
         self.assertEqual(result["status"], "found")
         self.assertEqual(result["source"], "mock-sandbox")
         self.assertEqual(directory.find_calls[0]["employee_id"], "160218")

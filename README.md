@@ -62,6 +62,26 @@ python -m app.main
 构建完成后，FastAPI 会直接提供 Vue 静态资源，因此平时只需要启动 `python -m app.main`，
 不需要额外常驻 Vite 进程。
 
+### macOS 后台运行
+
+仓库提供 [`launchd/com.xiaoyuanai.app.plist`](launchd/com.xiaoyuanai.app.plist)，用于让
+XiaoYuanAI 登录后自动启动并在异常退出后拉起。安装前先按本机实际位置修改 plist 中的
+Python 路径、`WorkingDirectory` 和日志路径，然后执行：
+
+```bash
+cp launchd/com.xiaoyuanai.app.plist ~/Library/LaunchAgents/
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.xiaoyuanai.app.plist
+launchctl kickstart -k "gui/$(id -u)/com.xiaoyuanai.app"
+```
+
+查看状态及重启：
+
+```bash
+launchctl print "gui/$(id -u)/com.xiaoyuanai.app"
+launchctl kickstart -k "gui/$(id -u)/com.xiaoyuanai.app"
+curl http://127.0.0.1:8000/health
+```
+
 ### 模型配置
 
 复制 `.env.example` 为 `.env`，然后只填写需要使用的远程 Provider。没有配置
@@ -96,8 +116,8 @@ XIAOYUAN_MYSQL_POOL_SIZE=10
 XIAOYUAN_MOCK_SANDBOX_URL=http://127.0.0.1:18080
 XIAOYUAN_MOCK_SANDBOX_TIMEOUT=5
 # 前端首次打开时使用的默认用户；可在聊天页左下角按工号切换
-XIAOYUAN_MOCK_USER_ID=160218
-XIAOYUAN_MOCK_USER_NAME=程少伟
+XIAOYUAN_MOCK_USER_ID=000328
+XIAOYUAN_MOCK_USER_NAME=郑子涵
 ```
 
 `.env` 已被 `.gitignore` 排除，不会提交到 Git。Python OpenAI 客户端使用的
@@ -199,8 +219,11 @@ AgentRuntime
 
 用户至少需要明确提供工号、手机号或姓名中的一项。若同时提供多项，工具按
 `工号 > 手机号 > 姓名` 选择主查询字段，再用其余身份线索和部门校验结果；线索不一致
-时返回冲突状态，不返回某位员工。工号、手机号、姓名均为精确匹配。姓名查询得到多人时，
-工具返回候选而不是擅自选择。
+时保留主命中员工，并只按不一致的手机号或姓名扩查；全部真实候选通过 `matched_by` 标明
+来源并交由用户确认。扩查为空时在 `expanded_searches` 中标记 `status=not_found`。部门只
+参与本地校验，不单独触发查询。工号、手机号、姓名均为精确匹配；姓名查询得到多人时，
+工具返回全部候选而不是擅自选择。完整的接口、Tool、返回协议和移植说明见
+[`docs/find-person-tool-porting-guide.md`](docs/find-person-tool-porting-guide.md)。
 
 本项目不建员工表、不缓存通讯录结果，也不提供员工 CRUD 页面。员工数据的唯一事实来源
 是外部接口。
@@ -227,19 +250,21 @@ AgentRuntime
 Agent 始终注册：
 
 - `find_person` Tool：调用通讯录 search，按工号、手机号或姓名查询员工。
-- `meeting-room-booking` Skill：集中管理会议室参数收集、相对日期解析、查询、
-  候选选择、明确确认和预约结果校验。
-  - `queryMeetingRooms` Tool：楼层、房间、日期或时间任一线索都可发起查询；返回
+- `meeting-room-booking` Skill：查询会议室并推送待确认预约单。
+  - `searchMeetingRooms` Tool：楼层、房间、日期或时间任一线索都可发起查询；返回
     09:00–18:00 半小时日程、可用时段以及与所问时长相同的候选时间。
-  - `bookMeetingRoom` Tool：参数齐全时生成 `meetingRoomBookingDraft` 结构化草稿，
-    模型不得用 Markdown 表格或普通文本模拟卡片。只有用户点击卡片“保存并预约”后，
-    服务端才会重新查询冲突并创建真实预约。用户未提供主题时由服务端使用可信预约人
-    生成“XXX预约的会议”，模型不猜姓名。
+  - `pushMeetingRoomBookingForm` Tool：参数齐全时推送 `meetingRoomBookingDraft`
+    结构化预约单；只给开始时间时默认持续一小时，未给主题时使用鉴权 `userName` 生成
+    “{userName}预定的会议”。真实预约由用户在预约单界面确认，模型没有真实预约工具。
 - `leave-request` Skill：集中管理余额查询、请假申请和撤销确认。
   - `queryLeaveBalance` Tool：获取当前沙箱用户的年休假、事假类型和剩余天数。
   - `applyLeave` Tool：只接受年休假或事假；必须收齐日期、全天/上午/下午和事由，并在
     用户明确确认后提交，返回真实 `requestId`。
   - `cancelLeave` Tool：必须使用真实 `requestId`，并在用户明确确认撤销后调用。
+
+`searchMeetingRooms` 只有一个外部查询入口：用户给出楼层时把楼层作为 `address` 查询，
+没有楼层时以空 `address` 查询全部楼层；返回会议室及预约单后，再在本地按日期、时段、
+容量和房间条件过滤。鉴权 `userId/userName` 由服务端注入，不属于模型参数。
 
 当天预约允许从当前所在的半小时槽即时生效。例如服务端时间为 15:32 时，可以预约
 15:30 开始、尚未结束且没有冲突的时段；15:00 等当前半小时槽之前的开始时间仍会被

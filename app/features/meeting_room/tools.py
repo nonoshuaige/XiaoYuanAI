@@ -83,7 +83,7 @@ class MeetingRoomAgentClient:
         return self.drafts.create_draft(**kwargs)
 
 
-class QueryMeetingRoomsInput(BaseModel):
+class SearchMeetingRoomsInput(BaseModel):
     floor: str | None = Field(default=None, description="楼层，纯数字，例如7")
     room: str | None = Field(
         default=None,
@@ -92,7 +92,7 @@ class QueryMeetingRoomsInput(BaseModel):
     date: str | None = Field(default=None, description="日期，格式yyyy/MM/dd")
     timeRange: str | None = Field(
         default=None,
-        description="时间段，格式HH:mm-HH:mm",
+        description="时间段，格式HH:mm-HH:mm；用户只给开始时间时默认持续1小时",
     )
     capacity: int | None = Field(
         default=None,
@@ -101,7 +101,7 @@ class QueryMeetingRoomsInput(BaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_query(self) -> "QueryMeetingRoomsInput":
+    def validate_query(self) -> "SearchMeetingRoomsInput":
         if self.floor is not None:
             self.floor = validate_floor(self.floor)
         if self.room is not None:
@@ -115,19 +115,21 @@ class QueryMeetingRoomsInput(BaseModel):
         return self
 
 
-class BookMeetingRoomInput(BaseModel):
+class PushMeetingRoomBookingFormInput(BaseModel):
     roomId: str = Field(description="外部查询结果返回的会议室ID")
     floor: str = Field(description="楼层，纯数字，例如7")
     date: str = Field(description="预约日期，格式yyyy/MM/dd")
-    timeRange: str = Field(description="预约时间段，格式HH:mm-HH:mm")
+    timeRange: str = Field(
+        description="预约时间段，格式HH:mm-HH:mm；用户只给开始时间时默认持续1小时"
+    )
     capacity: int | None = Field(default=None, description="参会人数，默认5", ge=1)
     theme: str | None = Field(
         default=None,
-        description="会议主题；不提供时由服务端生成默认主题",
+        description="会议主题；不提供时由服务端使用鉴权userName生成默认主题",
     )
 
     @model_validator(mode="after")
-    def validate_booking(self) -> "BookMeetingRoomInput":
+    def validate_booking(self) -> "PushMeetingRoomBookingFormInput":
         self.roomId = self.roomId.strip()
         if not self.roomId:
             raise ValueError("roomId不能为空")
@@ -141,14 +143,14 @@ class BookMeetingRoomInput(BaseModel):
 
 def create_meeting_room_tools(client: MeetingRoomClient) -> list[BaseTool]:
     @tool(
-        "queryMeetingRooms",
-        args_schema=QueryMeetingRoomsInput,
+        "searchMeetingRooms",
+        args_schema=SearchMeetingRoomsInput,
         description=(
-            "从外部会议室系统按楼层、房间、日期或时间任一线索查询。"
-            "返回占用信息、半小时时间轴和候选空闲时间；只查询，不写本地库存。"
+            "查询外部会议室及预约日程。可按楼层、房间、日期或时间搜索；"
+            "有楼层时查询该楼层，没有楼层时查询全部楼层。"
         ),
     )
-    def query_meeting_rooms(
+    def search_meeting_rooms(
         floor: str | None = None,
         room: str | None = None,
         date: str | None = None,
@@ -173,14 +175,14 @@ def create_meeting_room_tools(client: MeetingRoomClient) -> list[BaseTool]:
         return json.dumps(result, ensure_ascii=False)
 
     @tool(
-        "bookMeetingRoom",
-        args_schema=BookMeetingRoomInput,
+        "pushMeetingRoomBookingForm",
+        args_schema=PushMeetingRoomBookingFormInput,
         description=(
-            "依据外部查询结果生成待用户确认的预约草稿，本工具绝不创建外部预约。"
-            "用户必须在卡片中最终确认，模型不得代替用户完成最后写入。"
+            "依据查询结果推送一张可编辑的待确认会议室预约单。"
+            "本工具只生成预约单，不创建外部预约。"
         ),
     )
-    def book_meeting_room(
+    def push_meeting_room_booking_form(
         roomId: str,
         floor: str,
         date: str,
@@ -244,7 +246,7 @@ def create_meeting_room_tools(client: MeetingRoomClient) -> list[BaseTool]:
             result = {"success": False, "message": str(exc)}
         return json.dumps(result, ensure_ascii=False)
 
-    return [query_meeting_rooms, book_meeting_room]
+    return [search_meeting_rooms, push_meeting_room_booking_form]
 
 
 __all__ = [

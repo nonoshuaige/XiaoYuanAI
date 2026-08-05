@@ -102,9 +102,9 @@ class MeetingRoomToolTests(unittest.TestCase):
         self.assertEqual(skill.name, "meeting-room-booking")
         self.assertEqual(
             skill.tool_names,
-            ("queryMeetingRooms", "bookMeetingRoom"),
+            ("searchMeetingRooms", "pushMeetingRoomBookingForm"),
         )
-        self.assertIn("模型也不能代替用户执行最终预约", skill.instructions)
+        self.assertIn("真实预约、修改和确认由预约单界面及服务端处理", skill.instructions)
 
     def test_query_requires_at_least_one_clue(self):
         query_tool, _ = create_meeting_room_tools(self.client)
@@ -142,6 +142,23 @@ class MeetingRoomToolTests(unittest.TestCase):
         self.assertEqual(result["type"], "meetingRoomBookingDraft")
         self.assertEqual(result["roomName"], "707会议室")
         self.assertEqual(self.gateway.create_calls, [])
+
+    def test_booking_form_defaults_theme_from_authenticated_user(self):
+        _, booking_form_tool = create_meeting_room_tools(self.client)
+
+        result = json.loads(
+            booking_form_tool.invoke(
+                {
+                    "roomId": "165",
+                    "floor": "7",
+                    "date": "2026/07/29",
+                    "timeRange": "14:00-15:00",
+                }
+            )
+        )
+
+        self.assertEqual(result["bookedBy"], "程少伟")
+        self.assertEqual(result["theme"], "程少伟预定的会议")
 
     def test_human_confirmation_is_only_external_write_and_is_idempotent(self):
         draft = self.store.create_draft(

@@ -141,7 +141,7 @@ class MeetingRoomDraftStore:
             timespec="seconds"
         )
         booked_by = self._current_booked_by()
-        normalized_theme = (theme or "").strip() or f"{booked_by}预约的会议"
+        normalized_theme = (theme or "").strip() or f"{booked_by}预定的会议"
         with self._write_lock, self._connect() as connection:
             connection.execute(
                 """
@@ -237,7 +237,7 @@ class MeetingRoomDraftStore:
                 capacity=capacity,
             )
             normalized_theme = (theme or "").strip() or (
-                f"{draft['booked_by']}预约的会议"
+                f"{draft['booked_by']}预定的会议"
             )
             connection.execute(
                 """

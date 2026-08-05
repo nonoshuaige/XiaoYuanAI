@@ -236,25 +236,27 @@ class AgentRuntimeTests(unittest.TestCase):
             [skill],
         )
 
-        self.assertNotIn("queryMeetingRooms", prompt_without_tools)
-        self.assertNotIn("bookMeetingRoom", prompt_without_tools)
+        self.assertNotIn("searchMeetingRooms", prompt_without_tools)
+        self.assertNotIn("pushMeetingRoomBookingForm", prompt_without_tools)
         self.assertIn("meeting-room-booking", prompt_with_tools)
-        self.assertIn("`queryMeetingRooms`, `bookMeetingRoom`", prompt_with_tools)
         self.assertIn(
-            "时间、楼层、房间名称/编号中的任一线索",
+            "`searchMeetingRooms`, `pushMeetingRoomBookingForm`",
             prompt_with_tools,
         )
         self.assertIn(
-            "用户只提供时间时，查询全部楼层",
+            "有楼层就传floor",
             prompt_with_tools,
         )
-        self.assertIn("suggestedTimeRanges", prompt_with_tools)
-        self.assertIn("生成待确认预约卡片", prompt_with_tools)
-        self.assertIn("当前半小时槽之前的历史预约不再复述", prompt_with_tools)
-        self.assertIn("不在普通回复中重复", prompt_with_tools)
-        self.assertIn("待确认卡片有效期为30分钟", prompt_with_tools)
-        self.assertIn("本轮服务端时间上下文", prompt_with_tools)
-        self.assertIn("不得推荐或提交", prompt_with_tools)
+        self.assertIn(
+            "没有楼层也可以按房间、日期或时间查询全部楼层",
+            prompt_with_tools,
+        )
+        self.assertIn("指定时段未给人数时使用默认值5", prompt_with_tools)
+        self.assertIn("只给开始时间时默认持续1小时", prompt_with_tools)
+        self.assertIn("{userName}预定的会议", prompt_with_tools)
+        self.assertIn("真实预约、修改和确认由预约单界面及服务端处理", prompt_with_tools)
+        self.assertNotIn("待确认卡片有效期为30分钟", prompt_with_tools)
+        self.assertNotIn("bookingId和meetingId", prompt_with_tools)
 
     def test_runtime_registers_skill_tools_and_constraints_together(self):
         _, meeting_client = meeting_test_components(
@@ -272,11 +274,11 @@ class AgentRuntimeTests(unittest.TestCase):
 
         self.assertEqual(
             [registered_tool.name for registered_tool in runtime.tools],
-            ["queryMeetingRooms", "bookMeetingRoom"],
+            ["searchMeetingRooms", "pushMeetingRoomBookingForm"],
         )
         graph_prompt = build_system_prompt(runtime.tools, runtime.skills)
-        self.assertIn("模型也不能代替用户执行最终预约", graph_prompt)
-        self.assertIn("卡片返回真实bookingId和meetingId", graph_prompt)
+        self.assertIn("只推送预约单", graph_prompt)
+        self.assertIn("不属于模型工具能力", graph_prompt)
 
     def test_runtime_injects_fresh_server_time_before_each_turn(self):
         model = RecordingFakeChatModel(responses=["第一轮", "第二轮"])
@@ -446,7 +448,7 @@ class AgentRuntimeTests(unittest.TestCase):
         message = ToolMessage(
             content=json.dumps(tool_result, ensure_ascii=False),
             tool_call_id="query-1",
-            name="queryMeetingRooms",
+            name="searchMeetingRooms",
         )
 
         replies = _meeting_room_quick_replies(

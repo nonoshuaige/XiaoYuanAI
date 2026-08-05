@@ -70,18 +70,21 @@ class MockSandboxPeopleClient:
         name: str | None = None,
         department: str | None = None,
     ) -> dict[str, Any]:
-        clues = {
+        identity_clues = {
             "employee_id": _clean(employee_id),
             "phone": _clean(phone),
             "name": _clean(name),
         }
-        department = _clean(department)
-        all_clues = {**clues, "department": department}
-        selected_field = next(
-            (field for field in ("employee_id", "phone", "name") if clues[field]),
+        all_clues = {**identity_clues, "department": _clean(department)}
+        primary_field = next(
+            (
+                field
+                for field in ("employee_id", "phone", "name")
+                if identity_clues[field]
+            ),
             None,
         )
-        if selected_field is None:
+        if primary_field is None:
             return _empty_result(
                 "invalid_input",
                 "请至少提供工号、手机号或姓名中的一项。",
@@ -89,70 +92,119 @@ class MockSandboxPeopleClient:
 
         primary_matches = [
             person
-            for person in self._search(clues[selected_field] or "")
-            if person[selected_field] == clues[selected_field]
-        ]
-        alternative_matched_fields = []
-        if not primary_matches:
-            for field in ("employee_id", "phone", "name"):
-                if field == selected_field or not clues[field]:
-                    continue
-                if any(
-                    person[field] == clues[field]
-                    for person in self._search(clues[field] or "")
-                ):
-                    alternative_matched_fields.append(field)
-
-        additional_clues = {
-            field: value
-            for field, value in all_clues.items()
-            if field != selected_field and value
-        }
-        people = [
-            person
-            for person in primary_matches
-            if all(person[field] == value for field, value in additional_clues.items())
+            for person in self._search(identity_clues[primary_field] or "")
+            if person[primary_field] == identity_clues[primary_field]
         ]
         checked_fields = [
             field
             for field in ("employee_id", "phone", "name", "department")
             if all_clues[field]
         ]
-        conflicting_fields: list[str] = []
         if not primary_matches:
-            if alternative_matched_fields:
-                status = "conflicting_clues"
-                conflicting_fields = [
-                    field
-                    for field in ("employee_id", "phone", "name")
-                    if clues[field]
-                ]
-                message = "提供的身份线索无法指向同一位员工，请核对后重试。"
-            else:
-                status = "not_found"
-                message = (
-                    f"没有找到匹配的员工（按{_FIELD_LABELS[selected_field]}查询）。"
+            return {
+                "status": "not_found",
+                "primary_field": primary_field,
+                "matched_by": primary_field,
+                "checked_fields": checked_fields,
+                "conflicting_fields": [],
+                "expanded_searches": {},
+                "people": [],
+                "message": (
+                    f"没有找到匹配的员工（按{_FIELD_LABELS[primary_field]}查询）。"
+                ),
+                "source": "mock-sandbox",
+            }
+
+        remaining_clues = {
+            field: value
+            for field, value in all_clues.items()
+            if field != primary_field and value
+        }
+        fully_matching_people = [
+            person
+            for person in primary_matches
+            if all(person[field] == value for field, value in remaining_clues.items())
+        ]
+        if fully_matching_people:
+            status = "found" if len(fully_matching_people) == 1 else "multiple_matches"
+            message = (
+                "已从外部通讯录查询并验证全部线索，找到 1 位员工。"
+                if status == "found"
+                else (
+                    f"外部通讯录返回 {len(fully_matching_people)} 位匹配员工，"
+                    "需要用户确认。"
                 )
-        elif not people:
-            status = "conflicting_clues"
-            conflicting_fields = [
-                field
-                for field, value in additional_clues.items()
-                if all(person[field] != value for person in primary_matches)
+            )
+            return {
+                "status": status,
+                "primary_field": primary_field,
+                "matched_by": primary_field,
+                "checked_fields": checked_fields,
+                "conflicting_fields": [],
+                "expanded_searches": {},
+                "people": fully_matching_people,
+                "message": message,
+                "source": "mock-sandbox",
+            }
+
+        conflicting_fields = [
+            field
+            for field, value in remaining_clues.items()
+            if any(person[field] != value for person in primary_matches)
+        ]
+        candidates = [
+            _candidate(person, matched_by=primary_field) for person in primary_matches
+        ]
+        expanded_searches: dict[str, dict[str, str]] = {}
+        expanded_candidate_count = 0
+        for field in conflicting_fields:
+            # Department is only a local validation clue and never starts a search.
+            if field not in identity_clues:
+                continue
+            query_value = identity_clues[field] or ""
+            matches = [
+                person
+                for person in self._search(query_value)
+                if person[field] == query_value
             ]
-            message = "提供的线索与外部通讯录记录不一致，请核对后重试。"
-        elif len(people) == 1:
-            status = "found"
-            message = "已从外部通讯录查询并验证全部线索，找到 1 位员工。"
+            matched_candidates = [
+                _candidate(person, matched_by=field) for person in matches
+            ]
+            expanded_candidate_count += len(matches)
+            candidates.extend(matched_candidates)
+            expanded_searches[field] = {
+                "query_value": query_value,
+                "status": "found" if matches else "not_found",
+            }
+
+        conflict_labels = "、".join(_FIELD_LABELS[field] for field in conflicting_fields)
+        if expanded_candidate_count:
+            message = (
+                f"{_FIELD_LABELS[primary_field]}与{conflict_labels}匹配到不同员工，"
+                "请注意区分并确认目标人员。"
+            )
         else:
-            status = "multiple_matches"
-            message = f"外部通讯录返回 {len(people)} 位匹配员工，需要用户确认。"
+            message = (
+                f"{_FIELD_LABELS[primary_field]}命中的员工与{conflict_labels}线索不一致。"
+            )
+        empty_search_messages = [
+            f"已按{_FIELD_LABELS[field]}“{search['query_value']}”扩查，"
+            "但未找到精确匹配员工。"
+            for field, search in expanded_searches.items()
+            if search["status"] == "not_found"
+        ]
+        if empty_search_messages:
+            message = f"{message}{''.join(empty_search_messages)}请确认目标人员。"
+        elif not expanded_candidate_count:
+            message = f"{message}请核对并确认目标人员。"
         return {
-            "status": status,
-            "matched_by": selected_field,
+            "status": "conflicting_candidates",
+            "primary_field": primary_field,
+            "matched_by": primary_field,
             "checked_fields": checked_fields,
             "conflicting_fields": conflicting_fields,
-            "people": people,
+            "expanded_searches": expanded_searches,
+            "people": candidates,
             "message": message,
             "source": "mock-sandbox",
         }
@@ -192,10 +244,13 @@ def create_find_person_tool(directory: PeopleDirectory) -> BaseTool:
         "find_person",
         args_schema=FindPersonInput,
         description=(
-            "查询外部员工通讯录。仅当用户明确要求找人、确认员工或查询联系方式，"
-            "并已提供工号、手机号或姓名之一时调用；满足条件就立即调用。"
-            "把用户明确提供的全部线索如实传入；工具会校验线索是否一致，"
-            "冲突时不得选择某个人。部门只能辅助查询，不能单独用于找人。"
+            "查询员工人事信息，可返回工号、姓名、手机号、部门等。用户明确要求找人、"
+            "确认员工或查询员工信息时使用。调用前至少需要工号、手机号或姓名之一；"
+            "如果都没有，先引导用户补充。调用时传入用户明确提供的全部线索。"
+            "若返回 conflicting_candidates，必须展示全部 people 及匹配来源并请用户确认，"
+            "不得自行选择。若 expanded_searches 中某字段 status=not_found，表示该线索"
+            "已经查询但未命中，应告知用户核对，不要用相同线索重复查询。"
+            "department 仅用于辅助校验，不能单独调用本工具。"
         ),
     )
     def find_person(
@@ -225,13 +280,19 @@ def _clean(value: str | None) -> str | None:
 def _empty_result(status: str, message: str) -> dict[str, Any]:
     return {
         "status": status,
+        "primary_field": None,
         "matched_by": None,
         "checked_fields": [],
         "conflicting_fields": [],
+        "expanded_searches": {},
         "people": [],
         "message": message,
         "source": "mock-sandbox",
     }
+
+
+def _candidate(person: dict[str, str], *, matched_by: str) -> dict[str, str]:
+    return {**person, "matched_by": matched_by}
 
 
 _FIELD_LABELS = {

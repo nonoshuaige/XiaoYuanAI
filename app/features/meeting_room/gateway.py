@@ -230,7 +230,7 @@ class MockSandboxMeetingRoomGateway:
         start_time, end_time = parse_time_range(time_range)
         settings = self.http.settings
         resolved_theme = (theme or "").strip() or (
-            f"{settings.user_name}预约的会议"
+            f"{settings.user_name}预定的会议"
         )
         payload = self.http.request_json(
             "POST",

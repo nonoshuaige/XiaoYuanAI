@@ -74,8 +74,8 @@ class AgentResponse:
 _TOOL_ACTIVITY_LABELS = {
     "findPerson": "正在查询员工信息",
     "find_person": "正在查询员工信息",
-    "queryMeetingRooms": "正在查询可用会议室",
-    "bookMeetingRoom": "正在生成预约确认卡片",
+    "searchMeetingRooms": "正在查询可用会议室",
+    "pushMeetingRoomBookingForm": "正在推送会议室预约单",
     "queryLeaveBalance": "正在查询假期余额",
     "applyLeave": "正在提交请假申请",
     "cancelLeave": "正在撤销请假申请",
@@ -512,8 +512,9 @@ class AgentRuntime:
                             content=(
                                 "# 输出校验失败\n\n"
                                 "上一次回答声称已经生成预约卡片，但实际没有调用"
-                                "bookMeetingRoom，因此卡片不存在。请重新完成当前请求："
-                                "参数齐全时必须真实调用bookMeetingRoom；参数不齐或工具"
+                                "pushMeetingRoomBookingForm，因此卡片不存在。请重新完成"
+                                "当前请求：参数齐全时必须真实调用"
+                                "pushMeetingRoomBookingForm；参数不齐或工具"
                                 "失败时如实说明，严禁输出Markdown预约表格模拟卡片。"
                             )
                         )
@@ -1037,7 +1038,7 @@ def _meeting_room_quick_replies(
     for message in reversed(messages):
         if not isinstance(message, ToolMessage):
             continue
-        if getattr(message, "name", None) not in (None, "queryMeetingRooms"):
+        if getattr(message, "name", None) not in (None, "searchMeetingRooms"):
             continue
         try:
             payload = json.loads(_content_text(message.content))

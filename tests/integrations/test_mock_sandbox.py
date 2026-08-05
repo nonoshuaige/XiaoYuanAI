@@ -124,6 +124,31 @@ class FakeSandboxHttp:
         raise AssertionError(f"unexpected sandbox path: {path}")
 
 
+class FakePeopleSearchHttp(FakeSandboxHttp):
+    def __init__(self, results_by_query):
+        super().__init__()
+        self.results_by_query = results_by_query
+
+    def request_json(self, method, path, **kwargs):
+        if path.endswith("/addressbook/search"):
+            self.calls.append({"method": method, "path": path, **kwargs})
+            query = kwargs["params"]["searchValue"]
+            return {
+                "code": 0,
+                "data": {"user": self.results_by_query.get(query, [])},
+            }
+        return super().request_json(method, path, **kwargs)
+
+
+def sandbox_user(employee_id, name, phone, department="数字化部"):
+    return {
+        "loginCode": employee_id,
+        "name": name,
+        "telPhone": phone,
+        "orgName": department,
+    }
+
+
 class MockSandboxToolTests(unittest.TestCase):
     def setUp(self):
         self.http = FakeSandboxHttp()
@@ -139,6 +164,154 @@ class MockSandboxToolTests(unittest.TestCase):
         call = self.http.calls[0]
         self.assertEqual(call["params"]["searchValue"], "160218")
         self.assertEqual(call["headers"]["X-LOGINCODE"], "160218")
+
+    def test_people_search_uses_priority_and_does_not_repeat_matching_clues(self):
+        person = sandbox_user("160218", "程少伟", "13800000008")
+        http = FakePeopleSearchHttp({"160218": [person]})
+
+        result = MockSandboxPeopleClient(http).find(
+            employee_id="160218",
+            phone="13800000008",
+            name="程少伟",
+        )
+
+        self.assertEqual(result["status"], "found")
+        self.assertEqual(result["primary_field"], "employee_id")
+        self.assertEqual(
+            [call["params"]["searchValue"] for call in http.calls],
+            ["160218"],
+        )
+
+    def test_people_search_uses_phone_before_name(self):
+        person = sandbox_user("160218", "程少伟", "13800000008")
+        http = FakePeopleSearchHttp({"13800000008": [person]})
+
+        result = MockSandboxPeopleClient(http).find(
+            phone="13800000008",
+            name="程少伟",
+        )
+
+        self.assertEqual(result["status"], "found")
+        self.assertEqual(result["primary_field"], "phone")
+        self.assertEqual(
+            [call["params"]["searchValue"] for call in http.calls],
+            ["13800000008"],
+        )
+
+    def test_people_search_returns_primary_and_name_conflict_candidates(self):
+        employee_match = sandbox_user("160218", "程少伟", "13800000008")
+        name_match = sandbox_user("002301", "程涛涛", "13900000009")
+        http = FakePeopleSearchHttp(
+            {
+                "160218": [employee_match],
+                "程涛涛": [name_match],
+            }
+        )
+
+        result = MockSandboxPeopleClient(http).find(
+            employee_id="160218",
+            phone="13800000008",
+            name="程涛涛",
+        )
+
+        self.assertEqual(result["status"], "conflicting_candidates")
+        self.assertEqual(result["primary_field"], "employee_id")
+        self.assertEqual(result["conflicting_fields"], ["name"])
+        self.assertEqual(
+            [person["employee_id"] for person in result["people"]],
+            ["160218", "002301"],
+        )
+        self.assertEqual(
+            [person["matched_by"] for person in result["people"]],
+            ["employee_id", "name"],
+        )
+        self.assertEqual(
+            result["expanded_searches"]["name"],
+            {
+                "query_value": "程涛涛",
+                "status": "found",
+            },
+        )
+        self.assertEqual(
+            [call["params"]["searchValue"] for call in http.calls],
+            ["160218", "程涛涛"],
+        )
+        self.assertIn("请注意区分并确认目标人员", result["message"])
+
+    def test_people_search_expands_phone_and_name_when_both_conflict(self):
+        employee_match = sandbox_user("160218", "程少伟", "13800000008")
+        phone_match = sandbox_user("100002", "张三", "13900000009")
+        name_match = sandbox_user("002301", "程涛涛", "13700000007")
+        http = FakePeopleSearchHttp(
+            {
+                "160218": [employee_match],
+                "13900000009": [phone_match],
+                "程涛涛": [name_match],
+            }
+        )
+
+        result = MockSandboxPeopleClient(http).find(
+            employee_id="160218",
+            phone="13900000009",
+            name="程涛涛",
+        )
+
+        self.assertEqual(result["conflicting_fields"], ["phone", "name"])
+        self.assertEqual(
+            [person["matched_by"] for person in result["people"]],
+            ["employee_id", "phone", "name"],
+        )
+        self.assertEqual(
+            [call["params"]["searchValue"] for call in http.calls],
+            ["160218", "13900000009", "程涛涛"],
+        )
+        self.assertEqual(result["expanded_searches"]["phone"]["status"], "found")
+        self.assertEqual(result["expanded_searches"]["name"]["status"], "found")
+
+    def test_people_search_marks_empty_expansion_as_not_found(self):
+        employee_match = sandbox_user("000072", "王一鸣", "13800000135")
+        http = FakePeopleSearchHttp({"000072": [employee_match]})
+
+        result = MockSandboxPeopleClient(http).find(
+            employee_id="000072",
+            name="张三",
+        )
+
+        self.assertEqual(result["status"], "conflicting_candidates")
+        self.assertEqual(result["conflicting_fields"], ["name"])
+        self.assertEqual(len(result["people"]), 1)
+        expanded_name = result["expanded_searches"]["name"]
+        self.assertEqual(
+            expanded_name,
+            {
+                "query_value": "张三",
+                "status": "not_found",
+            },
+        )
+        self.assertIn(
+            "已按姓名“张三”扩查，但未找到精确匹配员工",
+            result["message"],
+        )
+        self.assertEqual(
+            [call["params"]["searchValue"] for call in http.calls],
+            ["000072", "张三"],
+        )
+
+    def test_people_search_department_conflict_does_not_trigger_search(self):
+        employee_match = sandbox_user("160218", "程少伟", "13800000008")
+        http = FakePeopleSearchHttp({"160218": [employee_match]})
+
+        result = MockSandboxPeopleClient(http).find(
+            employee_id="160218",
+            department="财务部",
+        )
+
+        self.assertEqual(result["status"], "conflicting_candidates")
+        self.assertEqual(result["conflicting_fields"], ["department"])
+        self.assertEqual(result["expanded_searches"], {})
+        self.assertEqual(len(result["people"]), 1)
+        self.assertEqual(result["people"][0]["matched_by"], "employee_id")
+        self.assertEqual(len(http.calls), 1)
 
     def test_meeting_search_normalizes_schedule_and_capacity(self):
         gateway = MockSandboxMeetingRoomGateway(
@@ -216,7 +389,7 @@ class MockSandboxToolTests(unittest.TestCase):
         create_call = self.http.calls[-1]
         self.assertEqual(create_call["json_body"]["reserveUserId"], "100001")
         self.assertEqual(create_call["json_body"]["reserveUserName"], "张三")
-        self.assertEqual(create_call["json_body"]["theme"], "张三预约的会议")
+        self.assertEqual(create_call["json_body"]["theme"], "张三预定的会议")
 
     def test_leave_query_apply_and_cancel_use_rest_methods(self):
         client = MockSandboxLeaveClient(self.http)
