@@ -11,6 +11,7 @@ from app.features.meeting_room.domain import (
     WORKDAY_END_MINUTES,
     WORKDAY_START_MINUTES,
     MeetingRoomError,
+    ceil_bookable_slot_start_minutes,
     minutes_to_time,
     overlaps,
     parse_time_range,
@@ -100,7 +101,7 @@ class MockSandboxMeetingRoomGateway:
         is_today = requested_date == now.strftime("%Y/%m/%d")
         current_time = now.strftime("%H:%M")
         display_start_minutes = (
-            _current_slot_start_minutes(now)
+            ceil_bookable_slot_start_minutes(now)
             if is_today
             else WORKDAY_START_MINUTES
         )
@@ -209,7 +210,10 @@ class MockSandboxMeetingRoomGateway:
             "capacity": capacity,
             "floor": f"{normalized_floor}F" if normalized_floor else None,
             "roomQuery": normalized_room_query,
-            "scheduleWindow": "09:00-18:00",
+            "scheduleWindow": (
+                f"{minutes_to_time(WORKDAY_START_MINUTES)}-"
+                f"{minutes_to_time(WORKDAY_END_MINUTES)}"
+            ),
             "displayWindow": (
                 f"{display_start_time}-{minutes_to_time(WORKDAY_END_MINUTES)}"
             ),
@@ -373,17 +377,6 @@ def _timeline(
             }
         )
     return result
-
-
-def _current_slot_start_minutes(now: datetime) -> int:
-    localized = (
-        now.replace(tzinfo=SHANGHAI_TIMEZONE)
-        if now.tzinfo is None
-        else now.astimezone(SHANGHAI_TIMEZONE)
-    )
-    current = localized.hour * 60 + localized.minute
-    rounded = current - current % SLOT_MINUTES
-    return min(WORKDAY_END_MINUTES, max(WORKDAY_START_MINUTES, rounded))
 
 
 def _available_ranges(timeline: list[dict[str, Any]]) -> list[str]:

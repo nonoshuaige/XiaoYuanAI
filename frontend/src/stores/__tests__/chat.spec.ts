@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { appendVisibleStreamDelta, contextMessages } from '@/stores/chat'
+import { contextMessages } from '@/stores/chat'
 import type { SessionContext } from '@/types/api'
 
 function context(
@@ -24,7 +24,6 @@ function context(
         created_at: '2026-07-29T17:00:00',
         status,
         error: status === 'failed' ? '模拟失败' : null,
-        quickReplies: [],
       },
       ...(withAssistant
         ? [
@@ -35,7 +34,6 @@ function context(
               created_at: '2026-07-29T17:00:01',
               status,
               error: null,
-              quickReplies: [],
               contextWindowTokens: 16_384,
               contextEstimatedTokens: 2_048,
               contextTruncated: false,
@@ -83,15 +81,18 @@ describe('contextMessages', () => {
       contextWindowTokens: 16_384,
     })
   })
-})
 
-describe('appendVisibleStreamDelta', () => {
-  it('stops before hidden quick-reply metadata split across chunks', () => {
-    const first = appendVisibleStreamDelta('请选择一个会议室。', '\n\n<!--')
+  it('shows a retryable timeout instead of a permanent loading placeholder', () => {
+    const timedOut = context('failed')
+    timedOut.messages[0]!.error = '模型响应超时（60秒），请重试'
 
-    expect(first).toEqual({
-      content: '请选择一个会议室。',
-      suppress: true,
+    const messages = contextMessages(timedOut)
+
+    expect(messages[1]).toMatchObject({
+      role: 'assistant',
+      content: '模型响应超时（60秒），请重试',
+      status: 'failed',
+      activities: [],
     })
   })
 })

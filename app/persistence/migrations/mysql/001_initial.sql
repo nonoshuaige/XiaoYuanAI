@@ -61,7 +61,6 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     round_no INT NOT NULL,
     role VARCHAR(16) NOT NULL,
     content LONGTEXT NOT NULL,
-    quick_replies_json LONGTEXT NOT NULL DEFAULT ('[]'),
     created_at VARCHAR(40) NOT NULL,
     PRIMARY KEY (session_id, round_no, role),
     INDEX idx_chat_messages_session_round (session_id, round_no),

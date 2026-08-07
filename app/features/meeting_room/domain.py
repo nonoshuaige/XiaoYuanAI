@@ -8,8 +8,9 @@ from zoneinfo import ZoneInfo
 
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 WORKDAY_START_MINUTES = 9 * 60
-WORKDAY_END_MINUTES = 18 * 60
+WORKDAY_END_MINUTES = 18 * 60 + 30
 SLOT_MINUTES = 30
+DEFAULT_MEETING_DURATION_MINUTES = 60
 DEFAULT_MEETING_CAPACITY = 5
 DRAFT_EXPIRY_MINUTES = 30
 
@@ -80,7 +81,7 @@ def validate_bookable_slot(
         start_minutes < WORKDAY_START_MINUTES
         or end_minutes > WORKDAY_END_MINUTES
     ):
-        raise MeetingRoomError("会议室仅支持工作时段09:00-18:00预约")
+        raise MeetingRoomError("会议室仅支持工作时段09:00-18:30预约")
     if start_minutes % SLOT_MINUTES or end_minutes % SLOT_MINUTES:
         raise MeetingRoomError("预约时间必须按30分钟整点或半点选择")
     localized_now = (
@@ -94,12 +95,14 @@ def validate_bookable_slot(
     booking_end = datetime.strptime(
         f"{date} {end_time}", "%Y/%m/%d %H:%M"
     ).replace(tzinfo=SHANGHAI_TIMEZONE)
-    current_slot_start = localized_now.replace(
-        minute=localized_now.minute - localized_now.minute % SLOT_MINUTES,
+    earliest_start_minutes = ceil_bookable_slot_start_minutes(localized_now)
+    earliest_start = localized_now.replace(
+        hour=earliest_start_minutes // 60,
+        minute=earliest_start_minutes % 60,
         second=0,
         microsecond=0,
     )
-    if booking_start < current_slot_start or booking_end <= localized_now:
+    if booking_start < earliest_start or booking_end <= localized_now:
         raise MeetingRoomError("不能预约过去的时间")
 
 
@@ -110,6 +113,19 @@ def time_to_minutes(value: str) -> int:
 
 def minutes_to_time(value: int) -> str:
     return f"{value // 60:02d}:{value % 60:02d}"
+
+
+def ceil_bookable_slot_start_minutes(now: datetime) -> int:
+    """Return the current boundary or next half-hour boundary."""
+    localized = (
+        now.replace(tzinfo=SHANGHAI_TIMEZONE)
+        if now.tzinfo is None
+        else now.astimezone(SHANGHAI_TIMEZONE)
+    )
+    current = localized.hour * 60 + localized.minute
+    remainder = current % SLOT_MINUTES
+    rounded = current if remainder == 0 else current + SLOT_MINUTES - remainder
+    return min(WORKDAY_END_MINUTES, max(WORKDAY_START_MINUTES, rounded))
 
 
 def overlaps(

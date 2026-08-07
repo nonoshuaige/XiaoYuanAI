@@ -9,6 +9,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app import main as server
+from app.agent.jobs import ChatJobCancelledError
 from app.persistence.conversations import ConversationStore
 
 
@@ -48,6 +49,8 @@ class BlockingRuntime:
         self.started.set()
         if not self.release.wait(timeout=5):
             raise TimeoutError("test did not release model turn")
+        if self.store.get_round(session_id, round_no)["status"] != "pending":
+            raise ChatJobCancelledError("对话轮次已取消")
         self.store.complete_round(session_id, round_no, "后台回复")
 
     def context(self, session_id: str):
@@ -75,11 +78,13 @@ class AsyncChatApiTests(unittest.TestCase):
 
     def tearDown(self):
         self.runtime.release.set()
-        server.chat_job_manager.wait_for_idle(
-            "client-session",
-            1,
-            timeout=2,
-        )
+        for session_id in ("client-session", "retry-session"):
+            for round_no in (1, 2):
+                server.chat_job_manager.wait_for_idle(
+                    session_id,
+                    round_no,
+                    timeout=2,
+                )
         self.temp_dir.cleanup()
 
     def test_chat_returns_pending_and_session_recovers_background_result(self):
@@ -105,6 +110,7 @@ class AsyncChatApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 202)
             self.assertEqual(response.json()["status"], "pending")
             self.assertEqual(response.json()["contextWindowTokens"], 8192)
+            self.assertNotIn("quickReplies", response.json())
             self.assertTrue(self.runtime.started.wait(timeout=1))
             pending = self.client.get("/api/sessions/client-session")
             self.assertEqual(pending.status_code, 200)
@@ -138,6 +144,10 @@ class AsyncChatApiTests(unittest.TestCase):
                     ("assistant", "后台回复"),
                 ],
             )
+            self.assertNotIn(
+                "quickReplies",
+                completed.json()["messages"][-1],
+            )
             events = self.client.get(
                 "/api/sessions/client-session/rounds/1/events"
             )
@@ -146,9 +156,69 @@ class AsyncChatApiTests(unittest.TestCase):
                 events.headers["content-type"],
                 "text/event-stream; charset=utf-8",
             )
-            self.assertIn("event: status", events.text)
             self.assertIn("event: completed", events.text)
             self.assertIn('"content": "后台回复"', events.text)
+
+    def test_pending_round_can_be_cancelled_and_retried(self):
+        with (
+            patch.object(server, "conversation_store", self.store),
+            patch.object(server, "get_runtime", return_value=self.runtime),
+            patch.object(
+                server,
+                "get_context",
+                side_effect=self.runtime.context,
+            ),
+        ):
+            first = self.client.post(
+                "/api/chat",
+                json={
+                    "sessionId": "retry-session",
+                    "message": "请重试这条消息",
+                    "model": "test-model",
+                    "contextWindowTokens": 8192,
+                },
+            )
+            self.assertEqual(first.status_code, 202)
+            self.assertTrue(self.runtime.started.wait(timeout=1))
+
+            retried = self.client.post(
+                "/api/sessions/retry-session/rounds/1/retry"
+            )
+
+            self.assertEqual(retried.status_code, 202)
+            self.assertEqual(retried.json()["retriedRound"], 1)
+            self.assertEqual(retried.json()["round"], 2)
+            self.assertEqual(retried.json()["model"], "test-model")
+            self.assertEqual(retried.json()["contextWindowTokens"], 8192)
+            self.assertEqual(
+                self.store.get_round("retry-session", 1)["status"],
+                "failed",
+            )
+            self.assertEqual(
+                self.store.get_round("retry-session", 1)["error"],
+                "用户取消本轮并重试",
+            )
+            self.assertEqual(
+                self.store.get_round("retry-session", 2)["status"],
+                "pending",
+            )
+            self.assertEqual(
+                self.store.get_round_user_message("retry-session", 2),
+                "请重试这条消息",
+            )
+
+            self.runtime.release.set()
+            self.assertTrue(
+                server.chat_job_manager.wait_for_idle(
+                    "retry-session",
+                    2,
+                    timeout=2,
+                )
+            )
+            self.assertEqual(
+                self.store.get_round("retry-session", 2)["status"],
+                "completed",
+            )
 
 
 if __name__ == "__main__":

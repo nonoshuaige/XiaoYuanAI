@@ -1,11 +1,12 @@
-"""Employee search tool backed exclusively by the external Mock Sandbox."""
+"""Composable employee finders exposed through one factual lookup tool."""
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from collections.abc import Iterable
+from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 from langchain_core.tools import BaseTool, tool
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.integrations.mock_sandbox.client import (
     MockSandboxError,
@@ -13,203 +14,114 @@ from app.integrations.mock_sandbox.client import (
 )
 
 
+class PersonInfo(TypedDict):
+    employee_id: str
+    name: str
+    phone: str
+    email: str
+    department: str
+
+
+class SearchError(TypedDict):
+    code: Literal["service_error"]
+
+
+PersonCondition = Literal[
+    "employee_id",
+    "phone",
+    "phone_suffix",
+    "name",
+    "name_fragment",
+]
+
+
+class PeopleNoMatch(TypedDict):
+    reason: Literal["condition_not_found", "conditions_conflict"]
+    conditions: list[PersonCondition]
+
+
+class PeopleSearchResult(TypedDict):
+    people: list[PersonInfo]
+    error: SearchError | None
+    noMatch: NotRequired[PeopleNoMatch]
+
+
 class FindPersonInput(BaseModel):
-    """Validated clues extracted from the user's natural-language request."""
+    """Independent lookup constraints that must all match returned people."""
+
+    model_config = ConfigDict(extra="forbid")
 
     employee_id: str | None = Field(
         default=None,
-        description="用户提供的工号；未提供时留空。",
+        description="按工号精确筛选；1 至 5 位纯数字会左补零至 6 位。",
     )
     phone: str | None = Field(
         default=None,
-        description="用户提供的手机号；未提供时留空。",
+        description="按完整手机号精确筛选。",
+    )
+    phone_suffix: str | None = Field(
+        default=None,
+        description="按手机尾号或手机号后几位筛选。",
     )
     name: str | None = Field(
         default=None,
-        description="用户提供的姓名；未提供时留空。",
+        description="按完整姓名精确筛选。",
     )
-    department: str | None = Field(
+    name_fragment: str | None = Field(
         default=None,
-        description="用户提供的辅助部门线索；未提供时留空。",
+        description="按姓名片段包含关系筛选。",
     )
 
+    @field_validator("phone", "phone_suffix")
+    @classmethod
+    def validate_phone_characters(cls, value: str | None) -> str | None:
+        if value is not None and any(
+            not character.isdigit() and character not in " +()-"
+            for character in value.strip()
+        ):
+            raise ValueError("手机号只能包含数字和常见分隔符")
+        return value
+
     @model_validator(mode="after")
-    def normalize_and_require_identity(self) -> "FindPersonInput":
-        for field_name in ("employee_id", "phone", "name", "department"):
+    def normalize_and_require_condition(self) -> "FindPersonInput":
+        labels = {
+            "employee_id": "工号",
+            "phone": "手机号",
+            "phone_suffix": "手机号尾号",
+            "name": "姓名",
+            "name_fragment": "姓名片段",
+        }
+        for field_name, label in labels.items():
             value = getattr(self, field_name)
             if value is not None:
                 normalized = value.strip()
-                setattr(self, field_name, normalized or None)
-        if not any((self.employee_id, self.phone, self.name)):
-            raise ValueError("工号、手机号、姓名至少需要提供一个")
+                if not normalized:
+                    raise ValueError(f"{label}不能为空")
+                setattr(self, field_name, normalized)
+        if not any(
+            (
+                self.employee_id,
+                self.phone,
+                self.phone_suffix,
+                self.name,
+                self.name_fragment,
+            )
+        ):
+            raise ValueError("至少需要提供一个人员查询条件")
         return self
 
 
 class PeopleDirectory(Protocol):
-    def find(
-        self,
-        *,
-        employee_id: str | None = None,
-        phone: str | None = None,
-        name: str | None = None,
-        department: str | None = None,
-    ) -> dict[str, Any]: ...
+    def search(self, value: str) -> list[PersonInfo]: ...
 
 
 class MockSandboxPeopleClient:
-    """Search the external address book without any local directory cache."""
+    """Expose the remote broad-match directory search as factual person data."""
 
     def __init__(self, http: MockSandboxHttpClient):
         self.http = http
 
-    def find(
-        self,
-        *,
-        employee_id: str | None = None,
-        phone: str | None = None,
-        name: str | None = None,
-        department: str | None = None,
-    ) -> dict[str, Any]:
-        identity_clues = {
-            "employee_id": _clean(employee_id),
-            "phone": _clean(phone),
-            "name": _clean(name),
-        }
-        all_clues = {**identity_clues, "department": _clean(department)}
-        primary_field = next(
-            (
-                field
-                for field in ("employee_id", "phone", "name")
-                if identity_clues[field]
-            ),
-            None,
-        )
-        if primary_field is None:
-            return _empty_result(
-                "invalid_input",
-                "请至少提供工号、手机号或姓名中的一项。",
-            )
-
-        primary_matches = [
-            person
-            for person in self._search(identity_clues[primary_field] or "")
-            if person[primary_field] == identity_clues[primary_field]
-        ]
-        checked_fields = [
-            field
-            for field in ("employee_id", "phone", "name", "department")
-            if all_clues[field]
-        ]
-        if not primary_matches:
-            return {
-                "status": "not_found",
-                "primary_field": primary_field,
-                "matched_by": primary_field,
-                "checked_fields": checked_fields,
-                "conflicting_fields": [],
-                "expanded_searches": {},
-                "people": [],
-                "message": (
-                    f"没有找到匹配的员工（按{_FIELD_LABELS[primary_field]}查询）。"
-                ),
-                "source": "mock-sandbox",
-            }
-
-        remaining_clues = {
-            field: value
-            for field, value in all_clues.items()
-            if field != primary_field and value
-        }
-        fully_matching_people = [
-            person
-            for person in primary_matches
-            if all(person[field] == value for field, value in remaining_clues.items())
-        ]
-        if fully_matching_people:
-            status = "found" if len(fully_matching_people) == 1 else "multiple_matches"
-            message = (
-                "已从外部通讯录查询并验证全部线索，找到 1 位员工。"
-                if status == "found"
-                else (
-                    f"外部通讯录返回 {len(fully_matching_people)} 位匹配员工，"
-                    "需要用户确认。"
-                )
-            )
-            return {
-                "status": status,
-                "primary_field": primary_field,
-                "matched_by": primary_field,
-                "checked_fields": checked_fields,
-                "conflicting_fields": [],
-                "expanded_searches": {},
-                "people": fully_matching_people,
-                "message": message,
-                "source": "mock-sandbox",
-            }
-
-        conflicting_fields = [
-            field
-            for field, value in remaining_clues.items()
-            if any(person[field] != value for person in primary_matches)
-        ]
-        candidates = [
-            _candidate(person, matched_by=primary_field) for person in primary_matches
-        ]
-        expanded_searches: dict[str, dict[str, str]] = {}
-        expanded_candidate_count = 0
-        for field in conflicting_fields:
-            # Department is only a local validation clue and never starts a search.
-            if field not in identity_clues:
-                continue
-            query_value = identity_clues[field] or ""
-            matches = [
-                person
-                for person in self._search(query_value)
-                if person[field] == query_value
-            ]
-            matched_candidates = [
-                _candidate(person, matched_by=field) for person in matches
-            ]
-            expanded_candidate_count += len(matches)
-            candidates.extend(matched_candidates)
-            expanded_searches[field] = {
-                "query_value": query_value,
-                "status": "found" if matches else "not_found",
-            }
-
-        conflict_labels = "、".join(_FIELD_LABELS[field] for field in conflicting_fields)
-        if expanded_candidate_count:
-            message = (
-                f"{_FIELD_LABELS[primary_field]}与{conflict_labels}匹配到不同员工，"
-                "请注意区分并确认目标人员。"
-            )
-        else:
-            message = (
-                f"{_FIELD_LABELS[primary_field]}命中的员工与{conflict_labels}线索不一致。"
-            )
-        empty_search_messages = [
-            f"已按{_FIELD_LABELS[field]}“{search['query_value']}”扩查，"
-            "但未找到精确匹配员工。"
-            for field, search in expanded_searches.items()
-            if search["status"] == "not_found"
-        ]
-        if empty_search_messages:
-            message = f"{message}{''.join(empty_search_messages)}请确认目标人员。"
-        elif not expanded_candidate_count:
-            message = f"{message}请核对并确认目标人员。"
-        return {
-            "status": "conflicting_candidates",
-            "primary_field": primary_field,
-            "matched_by": primary_field,
-            "checked_fields": checked_fields,
-            "conflicting_fields": conflicting_fields,
-            "expanded_searches": expanded_searches,
-            "people": candidates,
-            "message": message,
-            "source": "mock-sandbox",
-        }
-
-    def _search(self, value: str) -> list[dict[str, str]]:
+    def search(self, value: str) -> list[PersonInfo]:
         payload = self.http.request_json(
             "GET",
             "/api/eop-olk/api/v2/addressbook/search",
@@ -226,7 +138,7 @@ class MockSandboxPeopleClient:
         )
         if int(payload.get("code", -1)) != 0:
             raise MockSandboxError(
-                str(payload.get("message") or "外部通讯录查询失败")
+                str(payload.get("message") or "外部人员信息查询失败")
             )
         data = payload.get("data")
         users = data.get("user", []) if isinstance(data, dict) else []
@@ -237,73 +149,184 @@ class MockSandboxPeopleClient:
         ]
 
 
-def create_find_person_tool(directory: PeopleDirectory) -> BaseTool:
-    """Bind the external employee directory to the Agent tool."""
+def create_people_search_tools(directory: PeopleDirectory) -> tuple[BaseTool, ...]:
+    """Expose one lookup Tool that intersects independent finder results."""
 
     @tool(
         "find_person",
         args_schema=FindPersonInput,
         description=(
-            "查询员工人事信息，可返回工号、姓名、手机号、部门等。用户明确要求找人、"
-            "确认员工或查询员工信息时使用。调用前至少需要工号、手机号或姓名之一；"
-            "如果都没有，先引导用户补充。调用时传入用户明确提供的全部线索。"
-            "若返回 conflicting_candidates，必须展示全部 people 及匹配来源并请用户确认，"
-            "不得自行选择。若 expanded_searches 中某字段 status=not_found，表示该线索"
-            "已经查询但未命中，应告知用户核对，不要用相同线索重复查询。"
-            "department 仅用于辅助校验，不能单独调用本工具。"
+            "按传入条件查询员工，所有非空参数是 AND 关系。people只包含满足全部条件的人员；"
+            "people 为空表示没有共同匹配，此时noMatch区分某些条件无匹配和各条件指向不同人员；"
+            "error表示服务异常。"
+            "本工具只返回人员事实，不生成判断或回复。"
         ),
     )
     def find_person(
         employee_id: str | None = None,
         phone: str | None = None,
+        phone_suffix: str | None = None,
         name: str | None = None,
-        department: str | None = None,
-    ) -> dict[str, Any]:
+        name_fragment: str | None = None,
+    ) -> PeopleSearchResult:
+        find_operations = (
+            ("employee_id", employee_id, find_by_employee_id),
+            ("phone", phone, find_by_phone),
+            ("phone_suffix", phone_suffix, find_by_phone_suffix),
+            ("name", name, find_by_name),
+            ("name_fragment", name_fragment, find_by_name_fragment),
+        )
         try:
-            return directory.find(
-                employee_id=employee_id,
-                phone=phone,
-                name=name,
-                department=department,
-            )
-        except MockSandboxError as exc:
-            return _empty_result("service_error", str(exc))
+            condition_groups = [
+                (field_name, finder(directory, value))
+                for field_name, value, finder in find_operations
+                if value is not None
+            ]
+        except MockSandboxError:
+            return {"people": [], "error": {"code": "service_error"}}
+        people = _intersect_people(
+            [group for _, group in condition_groups]
+        )
+        if people:
+            return {"people": people, "error": None}
+        unmatched_conditions = [
+            field_name
+            for field_name, group in condition_groups
+            if not group
+        ]
+        return {
+            "people": [],
+            "error": None,
+            "noMatch": {
+                "reason": (
+                    "condition_not_found"
+                    if unmatched_conditions
+                    else "conditions_conflict"
+                ),
+                "conditions": unmatched_conditions or [
+                    field_name for field_name, _ in condition_groups
+                ],
+            },
+        }
 
-    return find_person
-
-
-def _clean(value: str | None) -> str | None:
-    normalized = value.strip() if value is not None else ""
-    return normalized or None
-
-
-def _empty_result(status: str, message: str) -> dict[str, Any]:
-    return {
-        "status": status,
-        "primary_field": None,
-        "matched_by": None,
-        "checked_fields": [],
-        "conflicting_fields": [],
-        "expanded_searches": {},
-        "people": [],
-        "message": message,
-        "source": "mock-sandbox",
-    }
-
-
-def _candidate(person: dict[str, str], *, matched_by: str) -> dict[str, str]:
-    return {**person, "matched_by": matched_by}
-
-
-_FIELD_LABELS = {
-    "employee_id": "工号",
-    "phone": "手机号",
-    "name": "姓名",
-    "department": "部门",
-}
+    return (find_person,)
 
 
-def _sandbox_person(user: dict[str, Any]) -> dict[str, str]:
+def find_by_employee_id(
+    directory: PeopleDirectory,
+    value: str,
+) -> list[PersonInfo]:
+    """Return only people whose employee ID equals the normalized query."""
+    normalized = normalize_employee_id(value)
+    return _deduplicate_people(
+        person
+        for person in directory.search(normalized)
+        if person["employee_id"].strip() == normalized
+    )
+
+
+def find_by_phone(directory: PeopleDirectory, value: str) -> list[PersonInfo]:
+    """Return only people whose normalized phone equals the query."""
+    normalized = normalize_phone(value)
+    return _deduplicate_people(
+        person
+        for person in directory.search(normalized)
+        if _phone_digits(person["phone"]) == normalized
+    )
+
+
+def find_by_phone_suffix(
+    directory: PeopleDirectory,
+    value: str,
+) -> list[PersonInfo]:
+    """Return only people whose normalized phone ends with the query."""
+    normalized = normalize_phone(value)
+    return _deduplicate_people(
+        person
+        for person in directory.search(normalized)
+        if _phone_digits(person["phone"]).endswith(normalized)
+    )
+
+
+def find_by_name(directory: PeopleDirectory, value: str) -> list[PersonInfo]:
+    """Return only people whose full name equals the query."""
+    normalized = _require_value(value, label="姓名")
+    return _deduplicate_people(
+        person
+        for person in directory.search(normalized)
+        if person["name"].strip() == normalized
+    )
+
+
+def find_by_name_fragment(
+    directory: PeopleDirectory,
+    value: str,
+) -> list[PersonInfo]:
+    """Return only people whose name contains the supplied fragment."""
+    normalized = _require_value(value, label="姓名片段")
+    return _deduplicate_people(
+        person
+        for person in directory.search(normalized)
+        if normalized in person["name"].strip()
+    )
+
+
+def normalize_employee_id(value: str) -> str:
+    """Normalize a short numeric employee ID without changing other identifiers."""
+    cleaned = _require_value(value, label="工号")
+    if cleaned.isascii() and cleaned.isdigit() and len(cleaned) < 6:
+        return cleaned.zfill(6)
+    return cleaned
+
+
+def normalize_phone(value: str) -> str:
+    """Normalize common visual separators while preserving the supplied digits."""
+    cleaned = _require_value(value, label="手机号")
+    if any(
+        not character.isdigit() and character not in " +()-"
+        for character in cleaned
+    ):
+        raise ValueError("手机号只能包含数字和常见分隔符")
+    normalized = _phone_digits(cleaned)
+    if not normalized:
+        raise ValueError("手机号必须包含数字")
+    return normalized
+
+
+def _intersect_people(groups: list[list[PersonInfo]]) -> list[PersonInfo]:
+    if not groups:
+        return []
+    common_employee_ids = {person["employee_id"] for person in groups[0]}
+    for group in groups[1:]:
+        common_employee_ids.intersection_update(
+            person["employee_id"] for person in group
+        )
+    return [
+        person
+        for person in groups[0]
+        if person["employee_id"] in common_employee_ids
+    ]
+
+
+def _deduplicate_people(people: Iterable[PersonInfo]) -> list[PersonInfo]:
+    deduplicated: dict[str, PersonInfo] = {}
+    for person in people:
+        deduplicated.setdefault(person["employee_id"], person)
+    return list(deduplicated.values())
+
+
+def _phone_digits(value: str) -> str:
+    return "".join(character for character in value if character.isdigit())
+
+
+def _require_value(value: str, *, label: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{label}不能为空")
+    return normalized
+
+
+def _sandbox_person(user: dict[str, Any]) -> PersonInfo:
     phones = (
         user.get("telPhone"),
         user.get("telPhone1"),
@@ -314,5 +337,8 @@ def _sandbox_person(user: dict[str, Any]) -> dict[str, str]:
         "employee_id": str(user.get("loginCode") or ""),
         "name": str(user.get("name") or ""),
         "phone": next((str(value) for value in phones if value), ""),
+        "email": str(
+            user.get("email") or user.get("mail") or user.get("emailAddress") or ""
+        ),
         "department": str(user.get("orgName") or user.get("orgFullName") or ""),
     }

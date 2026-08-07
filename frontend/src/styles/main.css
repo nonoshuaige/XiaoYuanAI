@@ -1604,6 +1604,19 @@ a {
   line-height: 1.45;
 }
 
+.message-retry-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 1px 3px 0;
+}
+
+.message-retry-actions .secondary-button {
+  min-height: 30px;
+  padding: 5px 11px;
+  font-size: 12px;
+}
+
 .message-row.user .message-bubble {
   border-color: var(--accent);
   border-bottom-right-radius: 5px;
@@ -1954,36 +1967,6 @@ a {
   font-size: 11px;
   line-height: 1.55;
   white-space: normal;
-}
-
-.quick-replies {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.quick-replies button {
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--ink);
-  padding: 8px 13px;
-  font: inherit;
-  cursor: pointer;
-  transition:
-    border-color 160ms var(--ease-out),
-    background 160ms var(--ease-out);
-}
-
-.quick-replies button:hover:not(:disabled) {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.quick-replies button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
 }
 
 .spinning {

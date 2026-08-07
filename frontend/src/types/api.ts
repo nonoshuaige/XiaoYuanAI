@@ -18,7 +18,6 @@ export interface ChatMessage {
   created_at: string
   status: 'pending' | 'completed' | 'failed'
   error: string | null
-  quickReplies: string[]
   contextWindowTokens?: number | null
   contextEstimatedTokens?: number | null
   contextTruncated?: boolean
@@ -128,7 +127,7 @@ export interface ChatResponse {
   modelCallUrl: string
   eventsUrl: string
   artifacts: BookingDraft[]
-  quickReplies: string[]
+  retriedRound?: number
 }
 
 export interface BookingDraftPayload {

@@ -13,27 +13,24 @@ from app.integrations.mock_sandbox.client import (
 
 
 class FakeDirectory:
-    def __init__(self, results: dict[str, dict]):
+    def __init__(self, results: dict[str, list[dict]]):
         self.results = results
-        self.calls: list[dict] = []
+        self.calls: list[str] = []
 
-    def find(self, **kwargs):
-        self.calls.append(kwargs)
-        return self.results[kwargs["employee_id"]]
+    def search(self, value: str):
+        self.calls.append(value)
+        return self.results[value]
 
 
-def found(employee_id: str, name: str) -> dict:
-    return {
-        "status": "found",
-        "people": [
-            {
-                "employee_id": employee_id,
-                "name": name,
-                "phone": "",
-                "department": "数字化部",
-            }
-        ],
-    }
+def found(employee_id: str, name: str) -> list[dict]:
+    return [
+        {
+            "employee_id": employee_id,
+            "name": name,
+            "phone": "",
+            "department": "数字化部",
+        }
+    ]
 
 
 class CurrentUserServiceTests(unittest.TestCase):
@@ -57,7 +54,7 @@ class CurrentUserServiceTests(unittest.TestCase):
         resolved = service.resolve(" 100001 ")
 
         self.assertEqual(resolved.as_dict(), {"employeeId": "100001", "name": "张三"})
-        self.assertEqual(directory.calls, [{"employee_id": "100001"}])
+        self.assertEqual(directory.calls, ["100001"])
         self.assertEqual(service.current().name, "程少伟")
 
     def test_switch_uses_directory_name_and_updates_http_identity(self):
@@ -70,9 +67,18 @@ class CurrentUserServiceTests(unittest.TestCase):
         self.assertEqual(self.http.settings.user_id, "100001")
         self.assertEqual(self.http.settings.user_name, "张三")
 
+    def test_resolve_normalizes_short_employee_id_before_search(self):
+        directory = FakeDirectory({"000345": found("000345", "短工号员工")})
+        service = CurrentUserService(self.http, directory)
+
+        resolved = service.resolve("0345")
+
+        self.assertEqual(resolved.employee_id, "000345")
+        self.assertEqual(directory.calls, ["000345"])
+
     def test_unknown_employee_cannot_replace_current_user(self):
         directory = FakeDirectory(
-            {"999999": {"status": "not_found", "people": []}}
+            {"999999": []}
         )
         service = CurrentUserService(self.http, directory)
 

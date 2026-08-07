@@ -5,7 +5,7 @@
 按需加载的模型运行时。模型调用同时保留 Provider 原始响应与 LangChain 转换后的
 `AIMessage`，用于本地开发和问题调试。
 
-当前版本始终加载“找人”“查询/预约会议室”和“查询/提交/撤销请假”Tool。业务 Tool
+当前版本始终加载“员工信息查询”“查询/预约会议室”和“查询/提交/撤销请假”Tool。业务 Tool
 统一调用本机 `mock-sandbox:18080`，会话、草稿和审计数据统一持久化到 MySQL。
 
 ## 项目能力
@@ -13,12 +13,11 @@
 | 模块 | 当前能力 |
 |---|---|
 | Agent 运行时 | LangChain `create_agent`，结构化 System Prompt，并为会议室 Skill 注入工作流约束 |
-| 找人工具 | 调用 Mock Sandbox 通讯录 search；工号 > 手机号 > 姓名主查询，全部线索一致性校验 |
+| 员工信息查询工具 | 一个可组合 `find_person` Tool；按全部已传条件过滤并返回人员事实 |
 | 会议室 Skill | 调用 Mock Sandbox search/book；支持结构化草稿卡片、人工确认和确认前冲突重查 |
 | 请假 Skill | 查询年休假/事假余额，明确确认后提交申请，并可按 requestId 确认撤销 |
 | 上下文管理 | 8K/16K/32K/64K 可选预算；固定规则 + 实时时间/卡片状态 + 摘要 + 按轮裁剪的近期原文 + 当前问题 |
 | Token 统计 | 每轮汇总 Agent 内全部模型步骤的输入、输出和总 Token，并在回复下方展示 |
-| 快捷回答 | 候选收敛为 2–4 个明确选项时，展示当前轮可直接发送的临时回答按钮 |
 | 长对话压缩 | 30/20/10 滚动摘要，后台异步生成，保留全量原文 |
 | 会话管理 | 新建、切换、自动命名、重命名、删除、多会话隔离 |
 | 消息可靠性 | 用户消息先落库，LLM 后台生成；SSE 事件可回放，离开页面或刷新后继续恢复 |
@@ -29,27 +28,42 @@
 | 数据存储 | MySQL 8 + InnoDB，连接池、版本化迁移和全量历史永久保存 |
 | Web 服务 | FastAPI JSON API + Vue 3、Vite、TypeScript 单页应用 |
 
-## 仓库定位
+## 仓库与 Git 工作流
 
 - GitHub：<https://github.com/nonoshuaige/XiaoYuanAI>
-- 本地目录：`/Users/zypro/Desktop/XiaoYuanAI/XiaoYuanAI`
-- Git 远端：`origin` → `https://github.com/nonoshuaige/XiaoYuanAI.git`
-- GitHub 推送账号：`nonoshuaige`
+- 默认远端：`origin`
 - 主分支：`main`
 
-后续开发、提交和推送均以这个本地目录及其 `origin` 远端为准。
+```bash
+git clone https://github.com/nonoshuaige/XiaoYuanAI.git
+cd XiaoYuanAI
+git switch main
+```
+
+日常开发建议从最新 `main` 创建功能分支，提交前运行本文末尾的后端与前端检查。`.env`、
+虚拟环境、前端依赖与构建产物、测试缓存、覆盖率和本地数据库均由 `.gitignore` 排除；
+`.env.example` 是唯一应提交的环境变量模板。
+
+## 设计文档
+
+- [`docs/query-capability-matrix.md`](docs/query-capability-matrix.md)：员工信息与会议室查询能力矩阵、输入输出示例和边界。
+- [`docs/meeting-room-tool-design.md`](docs/meeting-room-tool-design.md)：会议室查询过滤管道、预约草稿与 Agent/确定性代码边界。
+- [`docs/agent-prompt-security.md`](docs/agent-prompt-security.md)：Prompt、消息权限、Tool 数据流和副作用安全边界。
+- [`docs/find-person-tool-porting-guide.md`](docs/find-person-tool-porting-guide.md)：`find_person` 接口、Schema、返回协议与移植说明。
 
 ## 快速启动
 
 项目使用 Python 3.10+ 和 Node.js 20.19+，推荐在独立虚拟环境中运行。首次启动先
-安装并构建 Vue 前端：
+创建本地配置、安装依赖并构建 Vue 前端：
 
 ```bash
-conda activate agent-env
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env
 
 cd frontend
-npm install
+npm ci
 npm run build
 cd ..
 
@@ -103,6 +117,8 @@ OLLAMA_API_BASE=http://127.0.0.1:11434/v1/
 
 # 可选；未配置或不可用时回退到第一个可调用模型
 DEFAULT_MODEL_ID=qwen3-coder-plus
+# 单次模型 HTTP 请求超时秒数
+MODEL_REQUEST_TIMEOUT_SECONDS=60
 
 # MySQL 8+
 XIAOYUAN_MYSQL_HOST=127.0.0.1
@@ -111,6 +127,7 @@ XIAOYUAN_MYSQL_USER=root
 XIAOYUAN_MYSQL_PASSWORD=
 XIAOYUAN_MYSQL_DATABASE=xiaoyuan_ai
 XIAOYUAN_MYSQL_POOL_SIZE=10
+XIAOYUAN_MYSQL_CONNECT_TIMEOUT=5
 
 # 本地企业接口测试沙箱
 XIAOYUAN_MOCK_SANDBOX_URL=http://127.0.0.1:18080
@@ -129,7 +146,7 @@ curl http://127.0.0.1:18080/api/ready
 ```
 
 聊天页左下角会显示当前 Mock 用户。更换用户时只需输入工号；后端会通过 person
-员工通讯录查询姓名并再次校验，姓名不能由前端编辑，通讯录中不存在的工号不会生效。
+员工信息服务查询姓名并再次校验，姓名不能由前端编辑，服务中不存在的工号不会生效。
 
 ## 总体架构
 
@@ -162,7 +179,7 @@ AgentRuntime
         │
         ├── OpenAI 兼容模型服务
         ├── Mock Sandbox :18080
-        │     ├── 通讯录 search
+        │     ├── 人员信息 search
         │     ├── 会议室 selectMeet / create
         │     └── 请假余额 / 申请 / 撤销
         └── MySQL 会话、预约草稿与审计存储
@@ -171,7 +188,7 @@ AgentRuntime
 ## Agent 运行时
 
 主链位于 `app/agent/runtime.py`，System Prompt 及其动态构建逻辑位于
-`app/agent/prompts.py`。运行时通过外部企业接口统一注册“找人、查询/预约会议室、
+`app/agent/prompts.py`。运行时通过外部企业接口统一注册“员工信息查询、查询/预约会议室、
 查询/提交/撤销请假”能力，本地不再维护员工或会议室数据：
 
 ```text
@@ -182,17 +199,18 @@ AgentRuntime
   → 从 MySQL 读取最新摘要和未覆盖原文
   → 构建本次临时消息 State
   → 流式调用选中的模型，按需执行工具
-  → 文本增量和工具生命周期事件先写 MySQL，再通过 SSE 推送
+  → 文本增量和工具生命周期事件写入短期内存缓冲，再通过 SSE 推送
   → 保存 Provider 响应、完整 AIMessage 和 assistant 回复
   → 轮次标记为 completed
-  → 前端收到 completed 事件后用完整会话记录校准卡片和快捷回答
+  → 前端收到 completed 事件后用完整会话记录校准消息和卡片
   → 必要时提交后台摘要任务
 ```
 
 用户切换会话、离开聊天页或刷新不会取消后台任务。前端重新进入会话时从 MySQL
-恢复 pending 轮次，并重新连接该轮 SSE；服务端按事件 ID 重放尚未展示的状态、文本
-增量和工具调用进度。SSE 断流时浏览器会自动重连，并以会话轮询作为兜底。服务重启
-时会扫描持久化 pending 轮次并重新提交。
+恢复 pending 轮次，并重新连接该轮 SSE；同一进程内，服务端可从保留 5 分钟的内存
+缓冲按事件 ID 重放尚未展示的状态、文本增量和工具调用进度。SSE 断流时浏览器会自动
+重连，并以会话轮询作为兜底。服务重启时会扫描持久化 pending 轮次并重新提交，但
+不会恢复重启前的中间 token；已结束轮次直接从最终消息合成 `completed/failed` 事件。
 同一会话在上一轮完成前拒绝重复发送，但不阻止用户切换到其他会话。
 
 模型调用失败时：
@@ -205,27 +223,26 @@ AgentRuntime
 
 同一进程内，同一 session 的模型请求通过独立锁串行执行；不同 session 可以并行。
 
-## 找人工具
+## 员工信息查询 Skill
 
-工具 API 名为 `find_person`，中文能力名为“找人”。Agent 通过
-`/api/eop-olk/api/v2/addressbook/search` 查询 18080 测试沙箱，并把兼容接口字段映射为：
+`people-directory` Skill 提供一个可组合的 `find_person` Tool。内部 finder 共用外部人员
+查询接口 `/api/eop-olk/api/v2/addressbook/search` 访问 18080 测试沙箱，并映射字段为：
 
-| 字段 | Tool 字段 | 约束 |
+| 字段 | 返回字段 | 约束 |
 |---|---|---|
 | 工号 | `employee_id` | 对应 `loginCode` |
 | 姓名 | `name` | 可重名 |
 | 手机号 | `phone` | 优先取兼容接口可用电话字段 |
+| 邮箱 | `email` | 优先取兼容接口可用邮箱字段 |
 | 部门 | `department` | 对应 `orgName/orgFullName` |
 
-用户至少需要明确提供工号、手机号或姓名中的一项。若同时提供多项，工具按
-`工号 > 手机号 > 姓名` 选择主查询字段，再用其余身份线索和部门校验结果；线索不一致
-时保留主命中员工，并只按不一致的手机号或姓名扩查；全部真实候选通过 `matched_by` 标明
-来源并交由用户确认。扩查为空时在 `expanded_searches` 中标记 `status=not_found`。部门只
-参与本地校验，不单独触发查询。工号、手机号、姓名均为精确匹配；姓名查询得到多人时，
-工具返回全部候选而不是擅自选择。完整的接口、Tool、返回协议和移植说明见
+Tool 支持一次传入工号、完整手机号、手机号尾号、完整姓名或姓名片段等多个条件。每个条件
+由对应的底层 `find_by_*` 对远程宽匹配候选执行字段过滤，Tool 再按员工工号取交集，只返回
+同时满足全部条件的 `people`。Tool 不判断用户说法是否正确；待核对的说法由 Agent 与返回
+人员字段比较。完整协议见
 [`docs/find-person-tool-porting-guide.md`](docs/find-person-tool-porting-guide.md)。
 
-本项目不建员工表、不缓存通讯录结果，也不提供员工 CRUD 页面。员工数据的唯一事实来源
+本项目不建员工表、不缓存员工信息查询结果，也不提供员工 CRUD 页面。员工数据的唯一事实来源
 是外部接口。
 
 ### 外部测试沙箱
@@ -249,26 +266,51 @@ AgentRuntime
 
 Agent 始终注册：
 
-- `find_person` Tool：调用通讯录 search，按工号、手机号或姓名查询员工。
-- `meeting-room-booking` Skill：查询会议室并推送待确认预约单。
-  - `searchMeetingRooms` Tool：楼层、房间、日期或时间任一线索都可发起查询；返回
-    09:00–18:00 半小时日程、可用时段以及与所问时长相同的候选时间。
-  - `pushMeetingRoomBookingForm` Tool：参数齐全时推送 `meetingRoomBookingDraft`
-    结构化预约单；只给开始时间时默认持续一小时，未给主题时使用鉴权 `userName` 生成
-    “{userName}预定的会议”。真实预约由用户在预约单界面确认，模型没有真实预约工具。
+- `people-directory` Skill：提供一个可组合的 `find_person` Tool。
+  - Tool 接受工号、完整手机号、手机尾号、完整姓名和姓名片段等可选查询条件；每个已传条件
+    都会调用对应的底层 `find_by_*`，最终只返回全部条件交集中的 `people`。
+  - 空交集会区分“某个条件自身无匹配”和“各条件指向不同员工”；显式空值或非法手机号
+    文本在调用外部接口前拒绝，Agent 不会擅自删除条件扩大查询。
+  - Tool 不判断用户说法是否正确。例如“工号 X、手机尾号 Y 的人是不是张三”只用 X 和 Y
+    查询，再由 Agent 将返回人员的姓名与“张三”比较。
+- `meeting-room-assistant` Skill：查询会议室信息、推荐可用候选并推送待确认预约卡片。
+  - `search_meeting_rooms` Tool：一次查询一个楼层，并在服务端按可选的房间名称/`roomId`、
+    日期时段、最小容量、设备和空闲状态依次过滤。省略 `time` 时返回静态信息，传入
+    `time` 时返回过滤后的时间表、明确的 `isAvailable` 和冲突信息；静态与时间条件并存时
+    由同一次 Tool 调用返回交集，不再要求 Agent 自行按 `roomId` 交叉。
+  - 零结果会用 `emptyReason` 区分楼层无房间、指定房间不存在、容量不足、设备不符和时段
+    无空闲；空房间名、空设备名及非正楼层不会被静默当成“未传”。楼层与房间号冲突时先澄清。
+  - `book_meeting_room` Tool：模型传入 `roomId` 和 `time`，人数可选且默认5。服务端重新查询最新状态；
+    冲突时返回占用方与占用时间，空闲时只推送 `meetingRoomBookingDraft`，真实预约仍由
+    用户在卡片界面确认。
+  - 会议室数字编号的最后两位是房间序号，其余前缀是楼层，例如 `808` 属于8楼、
+    `1101` 属于11楼。Agent 直接推断，不为判断楼层调用 Tool；该规则不适用于外部
+    `roomId`。多楼层查询可并行执行，一轮最多5个楼层。
+  - 会议室每天可用时段为 `09:00-18:30`，以30分钟为一个时间槽。
+  - 楼层是查询 Tool 唯一必填的业务条件。已知楼层后可以直接调用，也可以由模型结合
+    上下文判断是否继续交流。省略 `search_meeting_rooms.time` 表示静态查询，传空对象表示
+    今天完整时间表；未给日期默认今天。准确开始和结束时间只在仅看空闲结果或最终创建
+    预约卡片时必须提供。
+  - 未提供会议时长时默认60分钟，未提供参会人数时默认5人；Agent 不为这两项追问。
+    只给开始时间时自动按60分钟推导结束时间；容量筛选时可将静态容量与时间表交叉。
+  - Agent 根据查询结果自行选择合适、简短、精炼的说法，让用户看清可用性并自行选择；
+    除非用户明确要求推荐，否则不代选房间或时段。
+  - Tool 按楼层返回数据，但最终回答按用户 query 裁剪房间和字段：指定房间时只回答该
+    房间，只问日程时不附加容量或设备；用户要求比较或备选时才扩展范围。
 - `leave-request` Skill：集中管理余额查询、请假申请和撤销确认。
   - `queryLeaveBalance` Tool：获取当前沙箱用户的年休假、事假类型和剩余天数。
   - `applyLeave` Tool：只接受年休假或事假；必须收齐日期、全天/上午/下午和事由，并在
     用户明确确认后提交，返回真实 `requestId`。
   - `cancelLeave` Tool：必须使用真实 `requestId`，并在用户明确确认撤销后调用。
 
-`searchMeetingRooms` 只有一个外部查询入口：用户给出楼层时把楼层作为 `address` 查询，
-没有楼层时以空 `address` 查询全部楼层；返回会议室及预约单后，再在本地按日期、时段、
-容量和房间条件过滤。鉴权 `userId/userName` 由服务端注入，不属于模型参数。
+查询 Tool 仍以单个楼层作为外部查询粒度；房间、静态属性和时间约束只在服务端过滤，
+不改变外部 `selectMeet(floor)` 的查询焦点。推送预约卡片前，服务端会按
+`roomId` 解析楼层并再次读取该楼层的最新状态。鉴权 `userId/userName` 由服务端注入，
+楼层、人数和主题都不是预约 Tool 的模型参数。
 
-当天预约允许从当前所在的半小时槽即时生效。例如服务端时间为 15:32 时，可以预约
-15:30 开始、尚未结束且没有冲突的时段；15:00 等当前半小时槽之前的开始时间仍会被
-拒绝。预约草稿有效期为 30 分钟，待确认期间可以编辑后“保存并预约”，或点击“取消”。
+当天最早可预约时间向右取整到半小时边界：服务端时间恰好为 11:30 时仍可从11:30开始，
+11:31 时最早只能从12:00开始。预约草稿有效期为 30 分钟，待确认期间可以编辑后
+“保存并预约”，或点击“取消”。
 口语化修改时间并生成新卡片不会自动取消旧卡片；若仍有旧卡片处于 `pending`，助手会
 提醒它仍可被确认，用户可以主动取消或等待过期。
 
@@ -290,7 +332,7 @@ SystemMessage
 SystemMessage
   本轮服务端动态注入的 Asia/Shanghai 当前日期、时间与星期
 
-SystemMessage
+HumanMessage
   本会话全部预约草稿的实时状态（pending/confirmed/cancelled/expired）
 
 HumanMessage（可选）
@@ -305,8 +347,9 @@ HumanMessage
 
 当前时间上下文在每轮模型调用前重新生成，不写入聊天历史。它用于把用户明确说出的
 “今天”“明天”“后天”等相对日期换算为会议室接口需要的 `yyyy/MM/dd`；不会用来
-猜测用户没有提供的预约参数。用户只说时间时可跨楼层查询，只说房间时可查看该房间
-日程；真正预约仍要求具体房间、日期、时段和明确确认。预约草稿状态同样在每轮调用前
+猜测用户没有提供的预约参数。用户未提供楼层时先追问，单次最多查询5个楼层；未提供
+时间窗口时使用指定日期全部可预约时间作为默认范围。真正推送预约卡片仍要求具体房间、日期和准确
+时段。预约草稿状态同样在每轮调用前
 从 MySQL 重新读取，因此无论卡片是否确认、取消或过期，后续 LLM 都能感知最新状态；
 状态上下文不授予模型替用户确认或取消的权限。
 
@@ -314,11 +357,20 @@ HumanMessage
 
 System Prompt 保留通用语言与推理规则、全局工具边界，以及需要跨多个 Tool 协作的
 Skill 工作流约束。单个 Tool 的能力、调用条件和参数说明由 LangChain 随工具定义独立
-提供，不重复复制。未注册的工具不会出现在模型可用工具中。历史摘要不会拼接进
-System Prompt，也不能覆盖系统规则或成为外部操作授权。
+提供，不重复复制。未注册的工具不会出现在模型可用工具中。全局规则明确区分高权限指令
+和不可信数据：用户消息、历史、摘要、Tool 自由文本及外部字段不能覆盖系统规则、泄露
+内部配置或成为外部操作授权；Tool 只接收当前任务所需的最少参数。
 
 摘要模型使用独立的 `SUMMARY_SYSTEM_PROMPT` 生成压缩结果，但生成结果回到主 Agent
-时仍以 `HumanMessage` 注入。
+时仍以 `HumanMessage` 注入。会议室草稿状态虽然由服务端读取，但 `theme/roomName` 等字段
+可能来自用户或外部系统，因此同样以带数据边界说明的 `HumanMessage` 注入；只有服务端
+时钟和固定输出校验规则使用动态 `SystemMessage`。
+
+完整威胁边界、已落地防护和待补强项见
+[`docs/agent-prompt-security.md`](docs/agent-prompt-security.md)。
+
+找人和会议室的完整输入示例、预期输出、异常边界及当前支持状态见
+[`docs/query-capability-matrix.md`](docs/query-capability-matrix.md)。
 
 ### 当前问题不会重复
 
@@ -341,12 +393,12 @@ System Prompt，也不能覆盖系统规则或成为外部操作授权。
 | `completed` | 用户消息和助手回复均已保存 |
 | `failed` | 用户消息已保存，但模型没有生成可用回复 |
 
-删除会话时，MySQL 外键会级联删除轮次、聊天消息和全部摘要版本。
+删除会话时，MySQL 外键会级联删除轮次、聊天消息、全部摘要版本、模型审计和预约草稿。
 
-每轮 Agent 事件保存在 `chat_events` 表，事件类型包括 `status`、`reset`、
-`text_delta`、`tool_start`、`tool_end`、`completed` 和 `failed`。文本直答会逐段
-显示；工具调用只展示面向用户的执行状态，不把原始参数暴露到页面。最终消息、卡片和
-快捷回答仍以 `chat_messages` 及业务表中的完成态为准。
+每轮 Agent 的 `status`、`reset`、`text_delta`、`tool_start`、`tool_end`、
+`completed` 和 `failed` 事件只保存在进程内短期缓冲，不写数据库。文本直答会逐段
+显示；工具调用只展示面向用户的执行状态，不把原始参数暴露到页面。轮次结束 5 分钟
+后清理缓冲，最终消息和卡片以 `chat_messages` 及业务表中的完成态为准。
 
 ## 模型调用调试记录
 
@@ -477,11 +529,10 @@ ollama pull qwen3.5:9b
 |---|---|
 | `sessions` | 会话标题、轮次数、创建和更新时间 |
 | `conversation_rounds` | 每一轮的 `pending/completed/failed` 生命周期 |
-| `model_call_audits` | 调试用 model ID、Provider 原始响应、完整 `AIMessage` 和调用状态 |
-| `chat_messages` | 所有 user/assistant 原文，以及助手消息的快捷回答选项 |
+| `model_call_audits` | Provider 原始响应和完整 `AIMessage`；模型、状态和错误从轮次表关联读取 |
+| `chat_messages` | 所有 user/assistant 原文 |
 | `conversation_summaries` | 累计摘要正文、覆盖范围和历史版本 |
 | `meeting_room_booking_drafts` | 预约草稿参数、所属会话/轮次、状态、有效期和最终预约凭证 |
-| `app_metadata` | 一次性数据库迁移状态（需要时自动创建） |
 | `schema_migrations` | 已执行的 MySQL DDL 版本 |
 
 `chat_messages` 使用 `(session_id, round_no, role)` 作为复合主键。摘要只影响模型
@@ -505,10 +556,9 @@ ollama pull qwen3.5:9b
 - 当前 session 和模型的 `localStorage` 记忆；
 - 服务端完整聊天记录恢复；
 - Agent 状态、工具调用进度和模型正文的 SSE 实时输出；
-- 刷新、切换会话和断线后的持久化事件重放；
+- 刷新、切换会话和短时断线后的内存事件重放；
 - Markdown 安全渲染；
 - 可编辑、可取消、可过期、需要人工确认的会议室预约卡片；
-- 候选收敛后的快捷回答按钮，点击后直接作为下一条用户消息发送。
 
 浏览器只保存当前 `sessionId` 和选中的 model ID，消息正文以 MySQL 为唯一来源。
 
@@ -535,6 +585,7 @@ npm run dev
 | `GET` | `/api/models` | 获取当前配置下的模型目录 |
 | `GET` | `/api/models?refresh=true` | 强制刷新 Coding Plan 模型目录 |
 | `POST` | `/api/chat` | 持久化消息并提交后台模型任务，返回 `202 pending` |
+| `POST` | `/api/sessions/{sessionId}/rounds/{round}/retry` | 取消仍在生成的最新轮次，并使用原消息、模型和上下文窗口重试 |
 | `GET` | `/api/sessions` | 获取真实会话列表 |
 | `GET` | `/api/sessions/{sessionId}` | 获取会话消息、摘要和压缩状态 |
 | `GET` | `/api/sessions/{sessionId}/rounds/{round}/events` | 回放并持续推送该轮 Agent SSE 事件 |
@@ -581,15 +632,12 @@ npm run dev
   "model": "实际使用的 model ID",
   "contextWindowTokens": 16384,
   "modelCallUrl": "/api/sessions/会话 ID/rounds/1/model-call",
-  "artifacts": [],
-  "quickReplies": []
+  "artifacts": []
 }
 ```
 
-最终回复、Tool 卡片和快捷回答通过 `GET /api/sessions/{sessionId}` 获取。`artifacts`
-只包含 Tool 真实生成的结构化卡片；普通 Markdown 或模型自行拼出的 JSON 不会被
-当作预约卡片。`quickReplies` 为 2–4 个可以直接作为用户回答发送的临时短选项；
-用户点击或发送新消息后不再显示历史选项。
+最终回复和 Tool 卡片通过 `GET /api/sessions/{sessionId}` 获取。`artifacts` 只包含
+Tool 真实生成的结构化卡片；普通 Markdown 或模型自行拼出的 JSON 不会被当作预约卡片。
 
 会话消息同时返回 `inputTokens`、`outputTokens`、`totalTokens`、
 `contextEstimatedTokens`、`contextWindowTokens`、`contextTruncated` 和
@@ -609,7 +657,7 @@ usage 时使用本地混合中英文计数并在界面标记 `≈`。上下文�
 │   ├── main.py              # FastAPI 组合根、页面与 JSON API
 │   ├── agent/               # Agent 运行时、Prompt、Skill 协议和后台任务
 │   ├── features/            # 按业务域组织的 Skill、Tool 与领域逻辑
-│   │   ├── people/          # 找人 Tool
+│   │   ├── people/          # 员工信息查询 Skill 与 Tool
 │   │   ├── meeting_room/    # 会议室 Skill、Tool、领域模型、Gateway 和草稿仓储
 │   │   └── leave/           # 请假 Skill 与 Tool
 │   ├── integrations/
@@ -629,9 +677,11 @@ usage 时使用本地混合中英文计数并在界面标记 `≈`。上下文�
 ├── tests/
 │   ├── agent/               # 会话、上下文、失败恢复、摘要和任务调度测试
 │   ├── api/                 # FastAPI 聊天接口测试
-│   ├── features/            # 找人、会议室等业务域测试
+│   ├── features/            # 员工信息查询、会议室等业务域测试
 │   ├── integrations/        # 18080 字段映射、请求体和人工确认边界测试
 │   └── providers/           # Provider 配置、模型发现和调用审计测试
+├── docs/                    # Tool 设计、能力矩阵、安全边界和移植说明
+├── .gitignore               # 本地配置、依赖、构建和运行产物排除规则
 ├── .env.example             # Provider 配置示例
 ├── requirements.txt         # Python 依赖
 └── README.md
@@ -657,7 +707,7 @@ npm run build
 - 会话隔离、重命名和删除；
 - MySQL 重启恢复全量记录；
 - 用户消息先落库及失败轮次保留；
-- SSE 文本增量、工具生命周期、完成事件及持久化重放；
+- SSE 文本增量、工具生命周期、完成事件及短期内存重放；
 - Provider 完整 HTTP 响应与 LangChain `AIMessage` 持久化；
 - 摘要保持用户消息权限，不进入 System Prompt；
 - 第一次和后续累计滚动摘要；
@@ -668,7 +718,7 @@ npm run build
 - 上下文预算校验、按完整轮次裁剪及多步骤模型 Token usage 汇总。
 - Ollama 模型自动发现、Provider 隔离和本地 OpenAI 兼容地址。
 - Vue API 错误归一化、日期边界和生产构建。
-- Mock Sandbox 找人、会议室和请假协议映射，以及会议室确认前零远端写入。
+- Mock Sandbox 员工信息查询、会议室和请假协议映射，以及会议室确认前零远端写入。
 
 ## 当前边界
 
@@ -687,4 +737,4 @@ npm run build
 
 ## 版本
 
-当前版本：**2.3 上下文预算与 Token 可观测性**
+当前版本：**2.4 企业 Tool 契约与实时恢复**

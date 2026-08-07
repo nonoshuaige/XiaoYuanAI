@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.features.people.tools import PeopleDirectory
+from app.features.people.tools import PeopleDirectory, normalize_employee_id
 from app.integrations.mock_sandbox.client import MockSandboxHttpClient
 
 
@@ -44,13 +44,8 @@ class CurrentUserService:
         )
 
     def resolve(self, employee_id: str) -> CurrentUser:
-        normalized_id = employee_id.strip()
-        result = self.directory.find(employee_id=normalized_id)
-        people = result.get("people")
-        if result.get("status") != "found" or not isinstance(people, list):
-            raise CurrentUserNotFoundError(
-                f"通讯录中没有工号 {normalized_id}，不能切换用户"
-            )
+        normalized_id = normalize_employee_id(employee_id)
+        people = self.directory.search(normalized_id)
         exact_matches = [
             person
             for person in people

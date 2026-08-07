@@ -50,6 +50,11 @@ class ModelConfigTests(unittest.TestCase):
             str(model.openai_api_base),
             "https://coder.example/v1",
         )
+        self.assertEqual(
+            model.request_timeout,
+            config.MODEL_REQUEST_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(model.max_retries, 0)
 
     def test_qwen3d_model_keeps_its_separate_provider(self):
         with patch.dict(

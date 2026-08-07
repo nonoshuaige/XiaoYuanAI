@@ -120,30 +120,11 @@ class ConversationStore:
                 CREATE INDEX IF NOT EXISTS idx_rounds_session_status
                 ON conversation_rounds(session_id, status, round_no);
 
-                CREATE TABLE IF NOT EXISTS chat_events (
-                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    round_no INTEGER NOT NULL,
-                    event_type TEXT NOT NULL,
-                    payload_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY (session_id, round_no)
-                        REFERENCES conversation_rounds(session_id, round_no)
-                        ON DELETE CASCADE
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_chat_events_round
-                ON chat_events(session_id, round_no, event_id);
-
                 CREATE TABLE IF NOT EXISTS model_call_audits (
                     session_id TEXT NOT NULL,
                     round_no INTEGER NOT NULL,
-                    model_id TEXT NOT NULL,
-                    status TEXT NOT NULL
-                        CHECK (status IN ('completed', 'failed')),
                     provider_responses_json TEXT NOT NULL DEFAULT '[]',
                     langchain_ai_message_json TEXT,
-                    error TEXT,
                     created_at TEXT NOT NULL,
                     PRIMARY KEY (session_id, round_no),
                     FOREIGN KEY (session_id, round_no)
@@ -151,15 +132,11 @@ class ConversationStore:
                         ON DELETE CASCADE
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_model_audits_session_round
-                ON model_call_audits(session_id, round_no DESC);
-
                 CREATE TABLE IF NOT EXISTS chat_messages (
                     session_id TEXT NOT NULL,
                     round_no INTEGER NOT NULL,
                     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
                     content TEXT NOT NULL,
-                    quick_replies_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     PRIMARY KEY (session_id, round_no, role),
                     FOREIGN KEY (session_id) REFERENCES sessions(session_id)
@@ -209,12 +186,9 @@ class ConversationStore:
                     "PRAGMA table_info(chat_messages)"
                 )
             }
-            if "quick_replies_json" not in message_columns:
+            if "quick_replies_json" in message_columns:
                 connection.execute(
-                    """
-                    ALTER TABLE chat_messages
-                    ADD COLUMN quick_replies_json TEXT NOT NULL DEFAULT '[]'
-                    """
+                    "ALTER TABLE chat_messages DROP COLUMN quick_replies_json"
                 )
             round_columns = {
                 row["name"]
@@ -502,17 +476,6 @@ class ConversationStore:
                 """,
                 (session_id, round_no, "user", user_content, now),
             )
-            self._append_chat_event(
-                connection,
-                session_id=session_id,
-                round_no=round_no,
-                event_type="status",
-                payload={
-                    "phase": "queued",
-                    "label": "请求已进入后台队列",
-                },
-                created_at=now,
-            )
             connection.execute(
                 """
                 UPDATE sessions
@@ -541,7 +504,6 @@ class ConversationStore:
         round_no: int,
         assistant_content: str,
         *,
-        quick_replies: list[str] | tuple[str, ...] = (),
         model_call: dict[str, Any] | None = None,
         token_usage: dict[str, int] | None = None,
         context_estimated_tokens: int | None = None,
@@ -575,15 +537,13 @@ class ConversationStore:
                     round_no,
                     role,
                     content,
-                    quick_replies_json,
                     created_at
-                ) VALUES (?, ?, 'assistant', ?, ?, ?)
+                ) VALUES (?, ?, 'assistant', ?, ?)
                 """,
                 (
                     session_id,
                     round_no,
                     assistant_content,
-                    json.dumps(list(quick_replies), ensure_ascii=False),
                     now,
                 ),
             )
@@ -616,25 +576,12 @@ class ConversationStore:
                     round_no,
                 ),
             )
-            self._append_chat_event(
-                connection,
-                session_id=session_id,
-                round_no=round_no,
-                event_type="completed",
-                payload={
-                    "content": assistant_content,
-                    "quickReplies": list(quick_replies),
-                },
-                created_at=now,
-            )
             if model_call is not None:
                 self._write_model_call(
                     connection,
                     session_id=session_id,
                     round_no=round_no,
-                    status="completed",
                     model_call=model_call,
-                    error=None,
                     created_at=now,
                 )
             connection.execute(
@@ -674,22 +621,12 @@ class ConversationStore:
                 (error_text, now, session_id, round_no),
             )
             if cursor.rowcount:
-                self._append_chat_event(
-                    connection,
-                    session_id=session_id,
-                    round_no=round_no,
-                    event_type="failed",
-                    payload={"message": "生成失败，请稍后重试"},
-                    created_at=now,
-                )
                 if model_call is not None:
                     self._write_model_call(
                         connection,
                         session_id=session_id,
                         round_no=round_no,
-                        status="failed",
                         model_call=model_call,
-                        error=error_text,
                         created_at=now,
                     )
                 connection.execute(
@@ -702,113 +639,6 @@ class ConversationStore:
                 )
         return cursor.rowcount > 0
 
-    def append_chat_event(
-        self,
-        session_id: str,
-        round_no: int,
-        event_type: str,
-        payload: dict[str, Any] | None = None,
-    ) -> int:
-        """Append one durable, replayable event for an active model turn."""
-        session_id = self.validate_session_id(session_id)
-        resolved_type = event_type.strip()
-        if not resolved_type or len(resolved_type) > 64:
-            raise ValueError("event_type 必须为 1 到 64 个字符")
-        now = datetime.now().isoformat()
-        with self._write_lock, self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT 1
-                FROM conversation_rounds
-                WHERE session_id = ? AND round_no = ?
-                """,
-                (session_id, round_no),
-            ).fetchone()
-            if row is None:
-                raise RuntimeError("对话轮次不存在")
-            return self._append_chat_event(
-                connection,
-                session_id=session_id,
-                round_no=round_no,
-                event_type=resolved_type,
-                payload=payload or {},
-                created_at=now,
-            )
-
-    def get_chat_events(
-        self,
-        session_id: str,
-        round_no: int,
-        *,
-        after_event_id: int = 0,
-        limit: int = 200,
-    ) -> list[dict[str, Any]]:
-        """Read ordered events after a cursor so SSE clients can reconnect."""
-        session_id = self.validate_session_id(session_id)
-        if round_no < 1:
-            raise ValueError("round_no 必须大于 0")
-        if after_event_id < 0:
-            raise ValueError("after_event_id 不能小于 0")
-        resolved_limit = max(1, min(limit, 1_000))
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT event_id, event_type, payload_json, created_at
-                FROM chat_events
-                WHERE
-                    session_id = ?
-                    AND round_no = ?
-                    AND event_id > ?
-                ORDER BY event_id
-                LIMIT ?
-                """,
-                (
-                    session_id,
-                    round_no,
-                    after_event_id,
-                    resolved_limit,
-                ),
-            ).fetchall()
-        return [
-            {
-                "eventId": int(row["event_id"]),
-                "type": row["event_type"],
-                "payload": json.loads(row["payload_json"]),
-                "created_at": row["created_at"],
-            }
-            for row in rows
-        ]
-
-    @staticmethod
-    def _append_chat_event(
-        connection: Any,
-        *,
-        session_id: str,
-        round_no: int,
-        event_type: str,
-        payload: dict[str, Any],
-        created_at: str,
-    ) -> int:
-        cursor = connection.execute(
-            """
-            INSERT INTO chat_events(
-                session_id,
-                round_no,
-                event_type,
-                payload_json,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                session_id,
-                round_no,
-                event_type,
-                json.dumps(payload, ensure_ascii=False),
-                created_at,
-            ),
-        )
-        return int(cursor.lastrowid)
-
     def get_model_calls(
         self,
         session_id: str,
@@ -819,24 +649,27 @@ class ConversationStore:
         session_id = self.validate_session_id(session_id)
         query = """
             SELECT
-                session_id,
-                round_no,
-                model_id,
-                status,
-                provider_responses_json,
-                langchain_ai_message_json,
-                error,
-                created_at
-            FROM model_call_audits
-            WHERE session_id = ?
+                a.session_id,
+                a.round_no,
+                r.model_id,
+                r.status,
+                a.provider_responses_json,
+                a.langchain_ai_message_json,
+                r.error,
+                a.created_at
+            FROM model_call_audits AS a
+            JOIN conversation_rounds AS r
+                ON r.session_id = a.session_id
+                AND r.round_no = a.round_no
+            WHERE a.session_id = ?
         """
         parameters: list[Any] = [session_id]
         if round_no is not None:
             if round_no < 1:
                 raise ValueError("round_no 必须大于 0")
-            query += " AND round_no = ?"
+            query += " AND a.round_no = ?"
             parameters.append(round_no)
-        query += " ORDER BY round_no"
+        query += " ORDER BY a.round_no"
         with self._connect() as connection:
             rows = connection.execute(query, parameters).fetchall()
         return [
@@ -884,7 +717,6 @@ class ConversationStore:
                 m.round_no,
                 m.role,
                 m.content,
-                m.quick_replies_json,
                 m.created_at,
                 COALESCE(r.status, 'completed') AS status,
                 r.error,
@@ -918,7 +750,6 @@ class ConversationStore:
                 "round": row["round_no"],
                 "role": row["role"],
                 "content": row["content"],
-                "quickReplies": json.loads(row["quick_replies_json"]),
                 "created_at": row["created_at"],
                 "status": row["status"],
                 "error": row["error"],
@@ -1162,9 +993,7 @@ class ConversationStore:
         *,
         session_id: str,
         round_no: int,
-        status: str,
         model_call: dict[str, Any],
-        error: str | None,
         created_at: str,
     ) -> None:
         connection.execute(
@@ -1173,19 +1002,13 @@ class ConversationStore:
                 INSERT INTO model_call_audits(
                     session_id,
                     round_no,
-                    model_id,
-                    status,
                     provider_responses_json,
                     langchain_ai_message_json,
-                    error,
                     created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?)
                 ON DUPLICATE KEY UPDATE
-                    model_id = VALUES(model_id),
-                    status = VALUES(status),
                     provider_responses_json = VALUES(provider_responses_json),
                     langchain_ai_message_json = VALUES(langchain_ai_message_json),
-                    error = VALUES(error),
                     created_at = VALUES(created_at)
                 """
                 if self._mysql
@@ -1193,28 +1016,20 @@ class ConversationStore:
             INSERT INTO model_call_audits(
                 session_id,
                 round_no,
-                model_id,
-                status,
                 provider_responses_json,
                 langchain_ai_message_json,
-                error,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(session_id, round_no) DO UPDATE SET
-                model_id = excluded.model_id,
-                status = excluded.status,
                 provider_responses_json = excluded.provider_responses_json,
                 langchain_ai_message_json =
                     excluded.langchain_ai_message_json,
-                error = excluded.error,
                 created_at = excluded.created_at
             """
             ),
             (
                 session_id,
                 round_no,
-                str(model_call["model_id"]),
-                status,
                 json.dumps(
                     model_call.get("provider_responses", []),
                     ensure_ascii=False,
@@ -1229,7 +1044,6 @@ class ConversationStore:
                     if model_call.get("langchain_ai_message") is not None
                     else None
                 ),
-                error,
                 created_at,
             ),
         )

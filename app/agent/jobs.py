@@ -13,6 +13,10 @@ ChatWorker = Callable[[str, int, str | None], object]
 LOGGER = logging.getLogger(__name__)
 
 
+class ChatJobCancelledError(RuntimeError):
+    """A durable chat round was cancelled while its worker was still active."""
+
+
 class ChatJobManager:
     """Run each persisted chat turn once while this service is alive."""
 
@@ -88,6 +92,9 @@ class ChatJobManager:
         session_id, round_no = key
         try:
             self._worker(session_id, round_no, model_id)
+        except ChatJobCancelledError:
+            # Cancellation is an expected terminal state, not a worker failure.
+            pass
         except Exception:
             # AgentRuntime persists the failed round before propagating.
             LOGGER.exception(
@@ -101,3 +108,6 @@ class ChatJobManager:
             with self._condition:
                 self._active.discard(key)
                 self._condition.notify_all()
+
+
+__all__ = ["ChatJobCancelledError", "ChatJobManager"]

@@ -21,7 +21,9 @@ class FakeCurrentUserService:
     def resolve(self, employee_id: str) -> CurrentUser:
         self.resolve_calls.append(employee_id)
         if employee_id == "999999":
-            raise CurrentUserNotFoundError("通讯录中没有工号 999999，不能切换用户")
+            raise CurrentUserNotFoundError(
+                "员工信息服务中没有工号 999999，不能切换用户"
+            )
         return CurrentUser(employee_id, "张三")
 
     def switch(self, employee_id: str) -> CurrentUser:

@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from app.agent.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
+from app.agent.event_buffer import chat_event_buffer
 from app.agent.runtime import get_context, get_runtime, reset_session
 from app.agent.jobs import ChatJobManager
 from app.providers.config import get_model_options
@@ -278,14 +279,31 @@ async def chat_endpoint(request: ChatRequest):
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     session = conversation_store.get_session(session_id)
+    return _pending_chat_response(
+        session_id=session_id,
+        round_no=round_no,
+        model_id=model_id,
+        context_window_tokens=request.context_window_tokens,
+        title=session["title"],
+    )
+
+
+def _pending_chat_response(
+    *,
+    session_id: str,
+    round_no: int,
+    model_id: str,
+    context_window_tokens: int,
+    title: str,
+) -> dict:
     return {
         "reply": "",
         "sessionId": session_id,
         "round": round_no,
         "status": "pending",
-        "title": session["title"],
+        "title": title,
         "model": model_id,
-        "contextWindowTokens": request.context_window_tokens,
+        "contextWindowTokens": context_window_tokens,
         "modelCallUrl": (
             f"/api/sessions/{session_id}/rounds/"
             f"{round_no}/model-call"
@@ -295,7 +313,66 @@ async def chat_endpoint(request: ChatRequest):
             f"{round_no}/events"
         ),
         "artifacts": [],
-        "quickReplies": [],
+    }
+
+
+@app.post(
+    "/api/sessions/{session_id}/rounds/{round_no}/retry",
+    status_code=202,
+)
+async def retry_chat_round(session_id: str, round_no: int):
+    """Cancel a pending round if needed and retry its user message."""
+    try:
+        session = conversation_store.get_session(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        if round_no != conversation_store.latest_round(session_id):
+            raise HTTPException(status_code=409, detail="只能重试当前会话的最新一轮")
+        previous = conversation_store.get_round(session_id, round_no)
+        if previous is None:
+            raise HTTPException(status_code=404, detail="round not found")
+        if previous["status"] not in {"pending", "failed"}:
+            raise HTTPException(status_code=409, detail="已完成的轮次不能重试")
+        message = conversation_store.get_round_user_message(session_id, round_no)
+        if message is None:
+            raise HTTPException(status_code=409, detail="待重试轮次缺少用户消息")
+        if previous["status"] == "pending":
+            cancelled = conversation_store.fail_round(
+                session_id,
+                round_no,
+                "用户取消本轮并重试",
+            )
+            if not cancelled:
+                raise HTTPException(status_code=409, detail="本轮状态已发生变化，请刷新后重试")
+            chat_event_buffer.append(
+                session_id,
+                round_no,
+                "failed",
+                {"message": "已取消本轮，正在重新提交"},
+            )
+        new_round, model_id = get_runtime().begin_chat(
+            session_id,
+            message,
+            previous["modelId"],
+            job_owner=CHAT_JOB_OWNER,
+            context_window_tokens=previous["contextWindowTokens"],
+        )
+        chat_job_manager.submit(session_id, new_round, model_id)
+    except ConversationPendingError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        **_pending_chat_response(
+            session_id=session_id,
+            round_no=new_round,
+            model_id=model_id,
+            context_window_tokens=previous["contextWindowTokens"],
+            title=session["title"],
+        ),
+        "retriedRound": round_no,
     }
 
 
@@ -332,7 +409,7 @@ async def stream_chat_events(
             if await request.is_disconnected():
                 return
             events = await run_in_threadpool(
-                conversation_store.get_chat_events,
+                chat_event_buffer.get,
                 session_id,
                 round_no,
                 after_event_id=cursor,
@@ -349,6 +426,42 @@ async def stream_chat_events(
                         return
                 last_heartbeat = time.monotonic()
                 continue
+            latest_state = await run_in_threadpool(
+                conversation_store.get_round,
+                session_id,
+                round_no,
+            )
+            if latest_state and latest_state["status"] == "completed":
+                messages = await run_in_threadpool(
+                    conversation_store.get_messages,
+                    session_id,
+                    after_round=round_no - 1,
+                    through_round=round_no,
+                )
+                assistant = next(
+                    (
+                        message
+                        for message in messages
+                        if message["role"] == "assistant"
+                    ),
+                    None,
+                )
+                payload = {
+                    "content": assistant["content"] if assistant else "",
+                }
+                yield (
+                    f"id: {cursor + 1}\n"
+                    "event: completed\n"
+                    f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                )
+                return
+            if latest_state and latest_state["status"] == "failed":
+                yield (
+                    f"id: {cursor + 1}\n"
+                    "event: failed\n"
+                    "data: {\"message\": \"生成失败，请稍后重试\"}\n\n"
+                )
+                return
             if time.monotonic() - last_heartbeat >= 10:
                 yield ": heartbeat\n\n"
                 last_heartbeat = time.monotonic()

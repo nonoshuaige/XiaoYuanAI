@@ -181,6 +181,10 @@ class MeetingRoomDraftStore:
             return self._booked_by
         return self._booked_by_provider().strip() or "沙箱访客"
 
+    def default_booking_theme(self) -> str:
+        """Resolve the current authenticated user's deterministic default theme."""
+        return f"{self._current_booked_by()}预定的会议"
+
     def get_draft(self, draft_id: str) -> dict[str, Any]:
         with self._write_lock, self._connect() as connection:
             row = self._expire_if_needed(

@@ -40,10 +40,21 @@ const latestMessageRenderState = computed(() => {
     message.activities
       .map((activity) => `${activity.id}:${activity.status}:${activity.label}`)
       .join('\u0000'),
-    message.quickReplies.join('\u0000'),
     message.artifacts.map((artifact) => `${artifact.draftId}:${artifact.status}`).join('\u0000'),
   ].join('\u0001')
 })
+const latestRound = computed(() =>
+  store.messages.reduce((current, message) => Math.max(current, message.round), 0),
+)
+
+function canRetryMessage(message: UiMessage) {
+  return (
+    message.role === 'assistant' &&
+    !message.transient &&
+    message.round === latestRound.value &&
+    ['pending', 'failed'].includes(message.status)
+  )
+}
 
 watch(latestMessageRenderState, async () => {
   await nextTick()
@@ -104,10 +115,6 @@ function handleComposerKeydown(event: KeyboardEvent) {
     event.preventDefault()
     void submit()
   }
-}
-
-function quickRepliesAreActionable(messageIndex: number) {
-  return !store.messages.slice(messageIndex + 1).some((message) => message.role === 'user')
 }
 
 const tokenFormatter = new Intl.NumberFormat('zh-CN')
@@ -286,7 +293,7 @@ onMounted(() => void store.initialize())
         </div>
 
         <article
-          v-for="(message, messageIndex) in store.messages"
+          v-for="message in store.messages"
           :key="message.key"
           class="message-row"
           :class="[message.role, { failed: message.status === 'failed' }]"
@@ -325,31 +332,29 @@ onMounted(() => void store.initialize())
                   :draft="draft"
                   @updated="store.updateArtifact(message.key, $event)"
                 />
-                <div
-                  v-if="
-                    message.quickReplies.length &&
-                    !message.artifacts.length &&
-                    quickRepliesAreActionable(messageIndex)
-                  "
-                  class="quick-replies"
-                  aria-label="快捷回答"
-                >
-                  <button
-                    v-for="reply in message.quickReplies"
-                    :key="reply"
-                    type="button"
-                    :disabled="store.sending"
-                    @click="store.send(reply)"
-                  >
-                    {{ reply }}
-                  </button>
-                </div>
               </template>
               <template v-else>{{ message.content }}</template>
             </div>
             <small v-if="hasRequestMetrics(message)" class="message-request-metrics">
               {{ requestMetrics(message) }}
             </small>
+            <div v-if="canRetryMessage(message)" class="message-retry-actions">
+              <button
+                class="secondary-button"
+                type="button"
+                :disabled="store.retryingRound !== null"
+                @click="store.retryRound(message.round)"
+              >
+                {{
+                  store.retryingRound === message.round
+                    ? '正在重新提交'
+                    : message.status === 'pending'
+                      ? '取消并重试'
+                      : '重试'
+                }}
+              </button>
+              <small v-if="store.retryError" class="inline-error">{{ store.retryError }}</small>
+            </div>
           </div>
         </article>
       </section>

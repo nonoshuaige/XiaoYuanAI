@@ -35,6 +35,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  retryRound: (sessionId: string, round: number) =>
+    request<ChatResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/rounds/${round}/retry`, {
+      method: 'POST',
+    }),
   renameSession: (id: string, title: string) =>
     request<SessionSummary>(`/api/sessions/${encodeURIComponent(id)}`, {
       method: 'PATCH',

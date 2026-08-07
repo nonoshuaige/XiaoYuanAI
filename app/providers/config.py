@@ -66,6 +66,11 @@ DEFAULT_MODEL_ID = (
     if _configured_default == CODER_PROVIDER.id
     else _configured_default
 )
+MODEL_REQUEST_TIMEOUT_SECONDS = float(
+    os.getenv("MODEL_REQUEST_TIMEOUT_SECONDS", "60")
+)
+if MODEL_REQUEST_TIMEOUT_SECONDS <= 0:
+    raise RuntimeError("MODEL_REQUEST_TIMEOUT_SECONDS 必须大于0")
 
 # Keep the last successfully observed catalog as a resilient fallback. Discovery
 # still refreshes from the provider, so newly published models can appear without
@@ -316,6 +321,8 @@ def get_llm(model_id: str = DEFAULT_MODEL_ID) -> ChatOpenAI:
         api_key=_provider_api_key(provider),
         base_url=_provider_base_url(provider),
         temperature=0.7,
+        timeout=MODEL_REQUEST_TIMEOUT_SECONDS,
+        max_retries=0,
         http_client=create_audited_http_client(provider.id),
         # Preserve the client's response hook and normal proxy auto-detection.
         http_socket_options=(),

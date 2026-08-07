@@ -6,7 +6,7 @@ import json
 from typing import Any, Literal
 
 from langchain_core.tools import BaseTool, tool
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.integrations.mock_sandbox.client import (
     MockSandboxError,
@@ -21,14 +21,20 @@ LEAVE_TYPE_IDS = {
 LEAVE_PERIOD_TYPES = {"全天": "0", "上午": "1", "下午": "2"}
 
 
-class QueryLeaveInput(BaseModel):
+class LeaveToolInput(BaseModel):
+    """Reject undeclared fields so only the explicit Tool contract is accepted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class QueryLeaveInput(LeaveToolInput):
     employeeId: str | None = Field(
         default=None,
         description="员工工号；未提供时使用当前沙箱用户",
     )
 
 
-class ApplyLeaveInput(BaseModel):
+class ApplyLeaveInput(LeaveToolInput):
     employeeId: str | None = Field(
         default=None,
         description="员工工号；未提供时使用当前沙箱用户",
@@ -59,7 +65,7 @@ class ApplyLeaveInput(BaseModel):
         return self
 
 
-class CancelLeaveInput(BaseModel):
+class CancelLeaveInput(LeaveToolInput):
     requestId: str = Field(min_length=1, max_length=64)
     employeeId: str | None = Field(
         default=None,

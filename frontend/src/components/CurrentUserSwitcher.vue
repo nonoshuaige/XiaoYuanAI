@@ -131,7 +131,7 @@ onMounted(() => void loadCurrentUser())
   <BaseDialog
     :open="dialogOpen"
     title="更换当前用户"
-    description="姓名只能从员工通讯录读取，无法手动修改。"
+    description="姓名只能从员工信息服务读取，无法手动修改。"
     width="small"
     :busy="resolving || switching"
     @close="closeDialog"
@@ -171,7 +171,7 @@ onMounted(() => void loadCurrentUser())
           />
           <CheckCircle v-if="resolvedUser" :size="18" weight="fill" aria-hidden="true" />
         </span>
-        <small id="name-source-note">数据来源：person 员工通讯录</small>
+        <small id="name-source-note">数据来源：员工信息服务</small>
       </label>
 
       <p v-if="formError" class="current-user-form-error" role="alert">{{ formError }}</p>

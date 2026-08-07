@@ -49,12 +49,10 @@ function createSessionId() {
   return crypto.randomUUID().replaceAll('-', '').slice(0, 16)
 }
 
-export function appendVisibleStreamDelta(content: string, delta: string) {
-  const nextContent = content + delta
-  const metadataStart = nextContent.indexOf('<!--')
-  return metadataStart >= 0
-    ? { content: nextContent.slice(0, metadataStart).trimEnd(), suppress: true }
-    : { content: nextContent, suppress: false }
+function failedAssistantContent(error: string | null) {
+  if (error === '用户取消本轮并重试') return '已取消本轮，已重新提交。'
+  if (error?.startsWith('模型响应超时')) return error
+  return `生成失败：${error || '模型请求失败'}`
 }
 
 export function contextMessages(context: SessionContext): UiMessage[] {
@@ -69,7 +67,6 @@ export function contextMessages(context: SessionContext): UiMessage[] {
       key: `${context.sessionId}-${message.round}-${message.role}`,
       artifacts:
         message.role === 'assistant' ? (context.artifactsByRound[String(message.round)] ?? []) : [],
-      quickReplies: message.quickReplies ?? [],
       activities: [],
     }
     if (
@@ -85,8 +82,7 @@ export function contextMessages(context: SessionContext): UiMessage[] {
         key: `${context.sessionId}-${message.round}-assistant`,
         round: message.round,
         role: 'assistant' as const,
-        content: message.status === 'pending' ? '' : `生成失败：${message.error || '模型请求失败'}`,
-        quickReplies: [],
+        content: message.status === 'pending' ? '' : failedAssistantContent(message.error),
         created_at: message.created_at,
         status: message.status,
         error: message.error,
@@ -118,6 +114,8 @@ export const useChatStore = defineStore('chat', () => {
   const loading = ref(true)
   const sending = ref(false)
   const error = ref('')
+  const retryingRound = ref<number | null>(null)
+  const retryError = ref('')
   let pollTimer: ReturnType<typeof setTimeout> | null = null
   let eventSource: EventSource | null = null
   let eventSourceKey = ''
@@ -178,6 +176,7 @@ export const useChatStore = defineStore('chat', () => {
     localStorage.removeItem(CURRENT_SESSION_KEY)
     title.value = '新对话'
     messages.value = []
+    retryError.value = ''
   }
 
   async function refreshSessions() {
@@ -251,7 +250,6 @@ export const useChatStore = defineStore('chat', () => {
     )
     eventSource = source
     eventSourceKey = key
-    let suppressHiddenMetadata = false
 
     source.addEventListener('reset', (event) => {
       const message = pendingAssistant(sessionId, round)
@@ -259,7 +257,6 @@ export const useChatStore = defineStore('chat', () => {
       const payload = eventPayload(event)
       message.content = ''
       message.activities = []
-      suppressHiddenMetadata = false
       const label = typeof payload.label === 'string' ? payload.label : ''
       if (label) {
         upsertActivity(message, {
@@ -285,11 +282,9 @@ export const useChatStore = defineStore('chat', () => {
       const message = pendingAssistant(sessionId, round)
       if (!message) return
       const payload = eventPayload(event)
-      if (typeof payload.delta !== 'string' || suppressHiddenMetadata) return
+      if (typeof payload.delta !== 'string') return
       message.activities = message.activities.filter((activity) => activity.id !== 'agent-status')
-      const visible = appendVisibleStreamDelta(message.content, payload.delta)
-      message.content = visible.content
-      suppressHiddenMetadata = visible.suppress
+      message.content += payload.delta
     })
     source.addEventListener('tool_start', (event) => {
       const message = pendingAssistant(sessionId, round)
@@ -320,9 +315,6 @@ export const useChatStore = defineStore('chat', () => {
       const payload = eventPayload(event)
       if (message) {
         message.content = typeof payload.content === 'string' ? payload.content : message.content
-        message.quickReplies = Array.isArray(payload.quickReplies)
-          ? payload.quickReplies.filter((item): item is string => typeof item === 'string')
-          : []
         message.status = 'completed'
         message.activities = []
       }
@@ -411,6 +403,7 @@ export const useChatStore = defineStore('chat', () => {
     stopStreaming()
     stopPolling()
     currentSessionId.value = id
+    retryError.value = ''
     localStorage.setItem(CURRENT_SESSION_KEY, id)
     const context = await api.session(id)
     if (loadVersion !== sessionLoadVersion || currentSessionId.value !== id) return
@@ -440,7 +433,6 @@ export const useChatStore = defineStore('chat', () => {
       error: null,
       artifacts: [],
       activities: [],
-      quickReplies: [],
       transient: true,
     })
     const pending: UiMessage = {
@@ -460,7 +452,6 @@ export const useChatStore = defineStore('chat', () => {
           status: 'running',
         },
       ],
-      quickReplies: [],
       transient: true,
     }
     messages.value.push(pending)
@@ -494,7 +485,6 @@ export const useChatStore = defineStore('chat', () => {
           status: 'running',
         },
       ]
-      pending.quickReplies = []
       pending.transient = false
       const optimisticUser = messages.value.find(
         (message) => message.key === `optimistic-user-${optimisticRound}`,
@@ -527,6 +517,39 @@ export const useChatStore = defineStore('chat', () => {
       }
     } finally {
       sending.value = false
+    }
+  }
+
+  async function retryRound(round: number) {
+    const sessionId = currentSessionId.value
+    if (!sessionId || retryingRound.value !== null) return
+    retryingRound.value = round
+    retryError.value = ''
+    stopStreaming()
+    stopPolling()
+    try {
+      const result = await api.retryRound(sessionId, round)
+      const context = await api.session(sessionId)
+      if (currentSessionId.value !== sessionId) return
+      applyContext(context)
+      await refreshSessions()
+      startStreaming(sessionId, result.round, result.eventsUrl)
+    } catch (caught) {
+      retryError.value = caught instanceof Error ? caught.message : '重试失败，请稍后再试'
+      try {
+        const context = await api.session(sessionId)
+        if (currentSessionId.value === sessionId) {
+          applyContext(context)
+          const pending = messages.value.find(
+            (message) => message.role === 'assistant' && message.status === 'pending',
+          )
+          if (pending) startStreaming(sessionId, pending.round)
+        }
+      } catch {
+        // Keep the actionable retry error visible when state refresh also fails.
+      }
+    } finally {
+      retryingRound.value = null
     }
   }
 
@@ -563,12 +586,15 @@ export const useChatStore = defineStore('chat', () => {
     loading,
     sending,
     error,
+    retryingRound,
+    retryError,
     initialize,
     selectModel,
     selectContextWindow,
     newConversation,
     loadSession,
     send,
+    retryRound,
     renameSession,
     deleteSession,
     updateArtifact,
