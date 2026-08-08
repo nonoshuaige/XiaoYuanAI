@@ -18,6 +18,7 @@ import MarkdownContent from '@/components/MarkdownContent.vue'
 import ModelPicker from '@/components/ModelPicker.vue'
 import { CONTEXT_WINDOW_OPTIONS, useChatStore } from '@/stores/chat'
 import type { UiMessage } from '@/stores/chat'
+import type { ModelStepUsage } from '@/types/api'
 import type { SessionSummary } from '@/types/api'
 
 const store = useChatStore()
@@ -143,15 +144,34 @@ function hasRequestMetrics(message: UiMessage) {
 
 function requestMetrics(message: UiMessage) {
   const metrics = [
-    `输入 ${formatUsageTokens(message, message.inputTokens)}`,
-    `输出 ${formatUsageTokens(message, message.outputTokens)}`,
-    `合计 ${formatUsageTokens(message, message.totalTokens)}`,
+    `累计输入 ${formatUsageTokens(message, message.inputTokens)}`,
+    `累计输出 ${formatUsageTokens(message, message.outputTokens)}`,
+    `累计合计 ${formatUsageTokens(message, message.totalTokens)}`,
     `上下文估算 ${formatTokens(message.contextEstimatedTokens)}/${formatContextWindow(message.contextWindowTokens)}`,
   ]
   if (message.contextTruncated) {
     metrics.push(`已裁剪 ${message.contextDroppedRounds ?? 0} 轮`)
   }
   return metrics.join(' · ')
+}
+
+function modelStepLabel(step: ModelStepUsage) {
+  const retry = step.attempt > 1 ? ` · 第 ${step.attempt} 次尝试` : ''
+  const phase =
+    step.phase === 'tool_decision'
+      ? '决定调用 Tool'
+      : step.phase === 'tool_result_answer'
+        ? '根据 Tool 结果回答'
+        : '直接回答'
+  return `第 ${step.step} 次模型请求 · ${phase}${retry}`
+}
+
+function modelStepMetrics(step: ModelStepUsage) {
+  const format = (value: number) => {
+    const formatted = formatTokens(value)
+    return step.estimated ? `≈${formatted}` : formatted
+  }
+  return `输入 ${format(step.inputTokens)} · 输出 ${format(step.outputTokens)} · 合计 ${format(step.totalTokens)}`
 }
 
 onMounted(() => void store.initialize())
@@ -335,9 +355,25 @@ onMounted(() => void store.initialize())
               </template>
               <template v-else>{{ message.content }}</template>
             </div>
-            <small v-if="hasRequestMetrics(message)" class="message-request-metrics">
-              {{ requestMetrics(message) }}
-            </small>
+            <div
+              v-if="hasRequestMetrics(message)"
+              class="message-request-metrics"
+              aria-label="模型请求 Token 明细"
+            >
+              <template v-if="message.modelSteps?.length">
+                <template v-for="step in message.modelSteps" :key="`${message.key}-${step.step}`">
+                  <div class="model-step-usage">
+                    <span class="model-step-label">{{ modelStepLabel(step) }}</span>
+                    <span>{{ modelStepMetrics(step) }}</span>
+                  </div>
+                  <div v-if="step.toolNames.length" class="model-tool-call">
+                    <span>Tool 调用</span>
+                    <code v-for="toolName in step.toolNames" :key="toolName">{{ toolName }}</code>
+                  </div>
+                </template>
+              </template>
+              <div class="model-usage-total">{{ requestMetrics(message) }}</div>
+            </div>
             <div v-if="canRetryMessage(message)" class="message-retry-actions">
               <button
                 class="secondary-button"

@@ -27,7 +27,7 @@ from app.agent.context_window import (
     combine_token_usage,
     estimate_messages_tokens,
     plan_context,
-    resolve_request_usage,
+    resolve_model_step_usage,
     validate_context_window_tokens,
 )
 from app.agent.event_buffer import ChatEventBuffer, chat_event_buffer
@@ -518,13 +518,17 @@ class AgentRuntime:
                     finally:
                         reset_booking_draft_context(draft_context_token)
                     ai_message = _last_ai_message(result["messages"])
-                    request_usage, token_usage_estimated = (
-                        resolve_request_usage(
+                    model_step_usages, token_usage_estimated = (
+                        resolve_model_step_usage(
                             result["messages"],
-                            initial_input_tokens=(
-                                context_plan.estimated_input_tokens
-                            ),
+                            initial_input_tokens=context_plan.estimated_input_tokens,
                             initial_message_count=len(model_messages),
+                        )
+                    )
+                    request_usage = combine_token_usage(
+                        *(
+                            step.as_token_usage()
+                            for step in model_step_usages
                         )
                     )
                     artifacts = _extract_artifacts(result["messages"])
@@ -563,8 +567,8 @@ class AgentRuntime:
                         finally:
                             reset_booking_draft_context(draft_context_token)
                         ai_message = _last_ai_message(result["messages"])
-                        retry_usage, retry_usage_estimated = (
-                            resolve_request_usage(
+                        retry_step_usages, retry_usage_estimated = (
+                            resolve_model_step_usage(
                                 result["messages"],
                                 initial_input_tokens=(
                                     context_plan.estimated_input_tokens
@@ -573,8 +577,17 @@ class AgentRuntime:
                                     )
                                 ),
                                 initial_message_count=len(retry_messages),
+                                start_step=len(model_step_usages) + 1,
+                                attempt=2,
                             )
                         )
+                        retry_usage = combine_token_usage(
+                            *(
+                                step.as_token_usage()
+                                for step in retry_step_usages
+                            )
+                        )
+                        model_step_usages.extend(retry_step_usages)
                         request_usage = combine_token_usage(
                             request_usage,
                             retry_usage,
@@ -626,6 +639,9 @@ class AgentRuntime:
                         context_truncated=context_plan.truncated,
                         context_dropped_rounds=context_plan.dropped_rounds,
                         token_usage_estimated=token_usage_estimated,
+                        model_step_usage=[
+                            step.as_dict() for step in model_step_usages
+                        ],
                     )
                     self.event_buffer.append(
                         session_id,

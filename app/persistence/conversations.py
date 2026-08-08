@@ -36,6 +36,18 @@ DEFAULT_DB_PATH = (
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
+def _deserialize_model_step_usage(value: str | None) -> list[dict[str, Any]]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [item for item in parsed if isinstance(item, dict)]
+
+
 @dataclass(frozen=True)
 class ConversationSummary:
     session_id: str
@@ -106,6 +118,7 @@ class ConversationStore:
                     output_tokens INTEGER,
                     total_tokens INTEGER,
                     token_usage_estimated INTEGER NOT NULL DEFAULT 0,
+                    model_step_usage_json TEXT NOT NULL DEFAULT '[]',
                     job_owner TEXT NOT NULL DEFAULT 'default',
                     status TEXT NOT NULL
                         CHECK (status IN ('pending', 'completed', 'failed')),
@@ -221,6 +234,7 @@ class ConversationStore:
                 "output_tokens": "INTEGER",
                 "total_tokens": "INTEGER",
                 "token_usage_estimated": "INTEGER NOT NULL DEFAULT 0",
+                "model_step_usage_json": "TEXT NOT NULL DEFAULT '[]'",
             }
             for column_name, definition in round_column_definitions.items():
                 if column_name not in round_columns:
@@ -510,6 +524,7 @@ class ConversationStore:
         context_truncated: bool = False,
         context_dropped_rounds: int = 0,
         token_usage_estimated: bool = False,
+        model_step_usage: list[dict[str, Any]] | None = None,
     ) -> None:
         """Append the assistant reply and close a previously pending round."""
         session_id = self.validate_session_id(session_id)
@@ -560,6 +575,7 @@ class ConversationStore:
                     output_tokens = ?,
                     total_tokens = ?,
                     token_usage_estimated = ?,
+                    model_step_usage_json = ?,
                     completed_at = ?
                 WHERE session_id = ? AND round_no = ?
                 """,
@@ -571,6 +587,11 @@ class ConversationStore:
                     token_usage.get("output_tokens") if token_usage else None,
                     token_usage.get("total_tokens") if token_usage else None,
                     int(token_usage_estimated),
+                    json.dumps(
+                        model_step_usage or [],
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
                     now,
                     session_id,
                     round_no,
@@ -727,7 +748,8 @@ class ConversationStore:
                 r.input_tokens,
                 r.output_tokens,
                 r.total_tokens,
-                r.token_usage_estimated
+                r.token_usage_estimated,
+                r.model_step_usage_json
             FROM chat_messages AS m
             LEFT JOIN conversation_rounds AS r
                 ON r.session_id = m.session_id
@@ -764,6 +786,9 @@ class ConversationStore:
                 "totalTokens": row["total_tokens"],
                 "tokenUsageEstimated": bool(
                     row["token_usage_estimated"]
+                ),
+                "modelSteps": _deserialize_model_step_usage(
+                    row["model_step_usage_json"]
                 ),
             }
             for row in rows
@@ -802,6 +827,7 @@ class ConversationStore:
                     output_tokens,
                     total_tokens,
                     token_usage_estimated,
+                    model_step_usage_json,
                     job_owner,
                     status,
                     error,
@@ -825,6 +851,9 @@ class ConversationStore:
             "outputTokens": row["output_tokens"],
             "totalTokens": row["total_tokens"],
             "tokenUsageEstimated": bool(row["token_usage_estimated"]),
+            "modelSteps": _deserialize_model_step_usage(
+                row["model_step_usage_json"]
+            ),
             "jobOwner": row["job_owner"],
             "status": row["status"],
             "error": row["error"],

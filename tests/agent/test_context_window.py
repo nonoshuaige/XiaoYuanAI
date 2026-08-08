@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import unittest
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 
 from app.agent.context_window import (
     aggregate_message_usage,
     plan_context,
+    resolve_model_step_usage,
     resolve_request_usage,
     validate_context_window_tokens,
 )
@@ -96,6 +102,52 @@ class ContextWindowTests(unittest.TestCase):
             usage.total_tokens,
             usage.input_tokens + usage.output_tokens,
         )
+
+    def test_model_steps_separate_tool_decision_from_tool_result_answer(self):
+        initial = [HumanMessage(content="找工号160218")]
+        tool_decision = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "find_person",
+                    "args": {"employee_id": "160218"},
+                    "id": "find-person-1",
+                    "type": "tool_call",
+                }
+            ],
+            usage_metadata={
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "total_tokens": 120,
+            },
+        )
+        tool_result = ToolMessage(
+            content='{"people":[{"name":"程少伟"}]}',
+            tool_call_id="find-person-1",
+        )
+        answer = AIMessage(
+            content="根据工号160218查到程少伟。",
+            usage_metadata={
+                "input_tokens": 180,
+                "output_tokens": 30,
+                "total_tokens": 210,
+            },
+        )
+
+        steps, estimated = resolve_model_step_usage(
+            [*initial, tool_decision, tool_result, answer],
+            initial_input_tokens=90,
+            initial_message_count=len(initial),
+        )
+
+        self.assertFalse(estimated)
+        self.assertEqual(len(steps), 2)
+        self.assertEqual(steps[0].phase, "tool_decision")
+        self.assertEqual(steps[0].tool_names, ("find_person",))
+        self.assertEqual(steps[0].total_tokens, 120)
+        self.assertEqual(steps[1].phase, "tool_result_answer")
+        self.assertEqual(steps[1].tool_names, ())
+        self.assertEqual(steps[1].total_tokens, 210)
 
 
 if __name__ == "__main__":

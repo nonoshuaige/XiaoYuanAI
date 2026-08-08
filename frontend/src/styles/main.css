@@ -1598,10 +1598,47 @@ a {
 }
 
 .message-request-metrics {
-  padding: 0 3px;
+  min-width: min(100%, 430px);
+  padding: 5px 4px 0;
   color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.model-step-usage {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 3px 14px;
+  padding: 3px 0;
+}
+
+.model-step-label {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.model-tool-call {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 1px 0 2px 9px;
+  padding-left: 9px;
+  border-left: 1px solid var(--line);
+}
+
+.model-tool-call code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--accent);
+  background: var(--accent-soft);
   font-size: 9px;
-  line-height: 1.45;
+}
+
+.model-usage-total {
+  margin-top: 3px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
 }
 
 .message-retry-actions {

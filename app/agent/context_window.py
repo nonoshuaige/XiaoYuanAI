@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
 
@@ -41,6 +41,39 @@ class TokenUsage:
             "output_tokens": self.output_tokens,
             "total_tokens": self.total_tokens,
         }
+
+
+@dataclass(frozen=True)
+class ModelStepUsage:
+    """Token usage for one real model request inside an Agent run."""
+
+    step: int
+    attempt: int
+    phase: str
+    tool_names: tuple[str, ...]
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    estimated: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "step": self.step,
+            "attempt": self.attempt,
+            "phase": self.phase,
+            "toolNames": list(self.tool_names),
+            "inputTokens": self.input_tokens,
+            "outputTokens": self.output_tokens,
+            "totalTokens": self.total_tokens,
+            "estimated": self.estimated,
+        }
+
+    def as_token_usage(self) -> TokenUsage:
+        return TokenUsage(
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            total_tokens=self.total_tokens,
+        )
 
 
 def validate_context_window_tokens(value: int | None) -> int:
@@ -179,20 +212,36 @@ def resolve_request_usage(
     initial_message_count: int,
 ) -> tuple[TokenUsage | None, bool]:
     """Use Provider usage when present and estimate only missing model steps."""
+    steps, estimated = resolve_model_step_usage(
+        messages,
+        initial_input_tokens=initial_input_tokens,
+        initial_message_count=initial_message_count,
+    )
+    return combine_token_usage(
+        *(step.as_token_usage() for step in steps)
+    ), estimated
+
+
+def resolve_model_step_usage(
+    messages: Sequence[BaseMessage],
+    *,
+    initial_input_tokens: int,
+    initial_message_count: int,
+    start_step: int = 1,
+    attempt: int = 1,
+) -> tuple[list[ModelStepUsage], bool]:
+    """Resolve each model request without assigning fake usage to Tool calls."""
     running_input_tokens = initial_input_tokens
-    input_tokens = 0
-    output_tokens = 0
-    total_tokens = 0
-    found = False
-    estimated = False
+    steps: list[ModelStepUsage] = []
+    any_estimated = False
+    saw_tool_result = False
     for index, message in enumerate(messages):
         if index < initial_message_count:
             continue
         if isinstance(message, AIMessage):
-            found = True
             real_usage = aggregate_message_usage([message])
+            step_estimated = real_usage is None
             if real_usage is None:
-                estimated = True
                 current_input = running_input_tokens
                 current_output = estimate_text_tokens(
                     _serialized_message_payload(message)
@@ -202,13 +251,34 @@ def resolve_request_usage(
                 current_input = real_usage.input_tokens
                 current_output = real_usage.output_tokens
                 current_total = real_usage.total_tokens
-            input_tokens += current_input
-            output_tokens += current_output
-            total_tokens += current_total
+            tool_names = tuple(
+                str(tool_call.get("name") or "tool")
+                for tool_call in message.tool_calls
+            )
+            phase = (
+                "tool_decision"
+                if tool_names
+                else "tool_result_answer"
+                if saw_tool_result
+                else "direct_answer"
+            )
+            steps.append(
+                ModelStepUsage(
+                    step=start_step + len(steps),
+                    attempt=attempt,
+                    phase=phase,
+                    tool_names=tool_names,
+                    input_tokens=current_input,
+                    output_tokens=current_output,
+                    total_tokens=current_total,
+                    estimated=step_estimated,
+                )
+            )
+            any_estimated = any_estimated or step_estimated
+        elif isinstance(message, ToolMessage):
+            saw_tool_result = True
         running_input_tokens += estimate_messages_tokens([message])
-    if not found:
-        return None, estimated
-    return TokenUsage(input_tokens, output_tokens, total_tokens), estimated
+    return steps, any_estimated
 
 
 def combine_token_usage(*usages: TokenUsage | None) -> TokenUsage | None:

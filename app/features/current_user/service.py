@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.features.people.tools import PeopleDirectory, normalize_employee_id
+from app.features.people.tools import (
+    PeopleDirectory,
+    filter_by_employee_id,
+    normalize_employee_id,
+)
 from app.integrations.mock_sandbox.client import MockSandboxHttpClient
 
 
@@ -48,9 +52,8 @@ class CurrentUserService:
         people = self.directory.search(normalized_id)
         exact_matches = [
             person
-            for person in people
+            for person in filter_by_employee_id(people, normalized_id)
             if isinstance(person, dict)
-            and str(person.get("employee_id") or "").strip() == normalized_id
             and str(person.get("name") or "").strip()
         ]
         if len(exact_matches) != 1:

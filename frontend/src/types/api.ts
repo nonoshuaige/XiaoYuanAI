@@ -11,6 +11,17 @@ export interface CurrentUser {
   name: string
 }
 
+export interface ModelStepUsage {
+  step: number
+  attempt: number
+  phase: 'direct_answer' | 'tool_decision' | 'tool_result_answer'
+  toolNames: string[]
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  estimated: boolean
+}
+
 export interface ChatMessage {
   round: number
   role: 'user' | 'assistant'
@@ -26,6 +37,7 @@ export interface ChatMessage {
   outputTokens?: number | null
   totalTokens?: number | null
   tokenUsageEstimated?: boolean
+  modelSteps?: ModelStepUsage[]
 }
 
 export interface ContextWindowOption {

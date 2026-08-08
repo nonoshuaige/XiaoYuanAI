@@ -1,4 +1,4 @@
-"""Composable employee finders exposed through one factual lookup tool."""
+"""One employee lookup Tool backed by a local deterministic filter pipeline."""
 
 from __future__ import annotations
 
@@ -29,14 +29,14 @@ class SearchError(TypedDict):
 PersonCondition = Literal[
     "employee_id",
     "phone",
-    "phone_suffix",
     "name",
-    "name_fragment",
+    "phone_suffix",
+    "department",
 ]
 
 
 class PeopleNoMatch(TypedDict):
-    reason: Literal["condition_not_found", "conditions_conflict"]
+    reason: Literal["no_common_match"]
     conditions: list[PersonCondition]
 
 
@@ -47,7 +47,7 @@ class PeopleSearchResult(TypedDict):
 
 
 class FindPersonInput(BaseModel):
-    """Independent lookup constraints that must all match returned people."""
+    """Primary lookup constraints plus an optional department filter."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -59,17 +59,19 @@ class FindPersonInput(BaseModel):
         default=None,
         description="按完整手机号精确筛选。",
     )
+    name: str | None = Field(
+        default=None,
+        description="按姓名字段包含关系筛选，例如“涵”可匹配姓名中包含“涵”的员工。",
+    )
     phone_suffix: str | None = Field(
         default=None,
         description="按手机尾号或手机号后几位筛选。",
     )
-    name: str | None = Field(
+    department: str | None = Field(
         default=None,
-        description="按完整姓名精确筛选。",
-    )
-    name_fragment: str | None = Field(
-        default=None,
-        description="按姓名片段包含关系筛选。",
+        description=(
+            "按部门名称精确筛选已有候选；只能与工号、完整手机号、姓名或手机尾号共同使用。"
+        ),
     )
 
     @field_validator("phone", "phone_suffix")
@@ -87,9 +89,9 @@ class FindPersonInput(BaseModel):
         labels = {
             "employee_id": "工号",
             "phone": "手机号",
-            "phone_suffix": "手机号尾号",
             "name": "姓名",
-            "name_fragment": "姓名片段",
+            "phone_suffix": "手机号尾号",
+            "department": "部门",
         }
         for field_name, label in labels.items():
             value = getattr(self, field_name)
@@ -102,12 +104,11 @@ class FindPersonInput(BaseModel):
             (
                 self.employee_id,
                 self.phone,
-                self.phone_suffix,
                 self.name,
-                self.name_fragment,
+                self.phone_suffix,
             )
         ):
-            raise ValueError("至少需要提供一个人员查询条件")
+            raise ValueError("工号、完整手机号、姓名或手机尾号至少需要提供一个")
         return self
 
 
@@ -150,125 +151,186 @@ class MockSandboxPeopleClient:
 
 
 def create_people_search_tools(directory: PeopleDirectory) -> tuple[BaseTool, ...]:
-    """Expose one lookup Tool that intersects independent finder results."""
+    """Expose one factual employee lookup Tool."""
 
     @tool(
         "find_person",
         args_schema=FindPersonInput,
         description=(
-            "按传入条件查询员工，所有非空参数是 AND 关系。people只包含满足全部条件的人员；"
-            "people 为空表示没有共同匹配，此时noMatch区分某些条件无匹配和各条件指向不同人员；"
-            "error表示服务异常。"
-            "本工具只返回人员事实，不生成判断或回复。"
+            "根据人员定位条件查询员工事实。工号、完整手机号、姓名或手机尾号至少提供一个；"
+            "部门只能作为附加过滤条件，不能单独查询。姓名按字段包含关系匹配，所有非空参数"
+            "都是AND关系。工具按工号、完整手机号、姓名、手机尾号的固定优先级，使用首个非空"
+            "条件调用一次人员目录，再对候选应用全部非空条件的本地字段过滤。people只包含同时"
+            "满足全部条件的人员；people为空表示没有共同匹配；error表示服务异常。工具只负责"
+            "找人并返回人员事实，不判断用户陈述、不进行身份认证，也不生成面向用户的回复。"
         ),
     )
     def find_person(
         employee_id: str | None = None,
         phone: str | None = None,
-        phone_suffix: str | None = None,
         name: str | None = None,
-        name_fragment: str | None = None,
+        phone_suffix: str | None = None,
+        department: str | None = None,
     ) -> PeopleSearchResult:
-        find_operations = (
-            ("employee_id", employee_id, find_by_employee_id),
-            ("phone", phone, find_by_phone),
-            ("phone_suffix", phone_suffix, find_by_phone_suffix),
-            ("name", name, find_by_name),
-            ("name_fragment", name_fragment, find_by_name_fragment),
-        )
         try:
-            condition_groups = [
-                (field_name, finder(directory, value))
-                for field_name, value, finder in find_operations
-                if value is not None
-            ]
+            lookup_value = select_lookup_value(
+                employee_id=employee_id,
+                phone=phone,
+                name=name,
+                phone_suffix=phone_suffix,
+            )
+            candidates = directory.search(lookup_value)
         except MockSandboxError:
             return {"people": [], "error": {"code": "service_error"}}
-        people = _intersect_people(
-            [group for _, group in condition_groups]
+        people = apply_people_filters(
+            candidates,
+            employee_id=employee_id,
+            phone=phone,
+            name=name,
+            phone_suffix=phone_suffix,
+            department=department,
         )
         if people:
             return {"people": people, "error": None}
-        unmatched_conditions = [
-            field_name
-            for field_name, group in condition_groups
-            if not group
-        ]
         return {
             "people": [],
             "error": None,
             "noMatch": {
-                "reason": (
-                    "condition_not_found"
-                    if unmatched_conditions
-                    else "conditions_conflict"
+                "reason": "no_common_match",
+                "conditions": active_conditions(
+                    employee_id=employee_id,
+                    phone=phone,
+                    name=name,
+                    phone_suffix=phone_suffix,
+                    department=department,
                 ),
-                "conditions": unmatched_conditions or [
-                    field_name for field_name, _ in condition_groups
-                ],
             },
         }
 
     return (find_person,)
 
 
-def find_by_employee_id(
-    directory: PeopleDirectory,
+def select_lookup_value(
+    *,
+    employee_id: str | None,
+    phone: str | None,
+    name: str | None,
+    phone_suffix: str | None,
+) -> str:
+    """Choose and normalize one remote lookup value by fixed selectivity."""
+    if employee_id is not None:
+        return normalize_employee_id(employee_id)
+    if phone is not None:
+        return normalize_phone(phone)
+    if name is not None:
+        return normalize_name(name)
+    if phone_suffix is not None:
+        return normalize_phone(phone_suffix)
+    raise ValueError("缺少主要人员查询条件")
+
+
+def apply_people_filters(
+    people: list[PersonInfo],
+    *,
+    employee_id: str | None,
+    phone: str | None,
+    name: str | None,
+    phone_suffix: str | None,
+    department: str | None,
+) -> list[PersonInfo]:
+    """Apply every supplied condition as an AND filter to one candidate list."""
+    filtered = _deduplicate_people(people)
+    operations = (
+        (employee_id, filter_by_employee_id),
+        (phone, filter_by_phone),
+        (name, filter_by_name),
+        (phone_suffix, filter_by_phone_suffix),
+        (department, filter_by_department),
+    )
+    for value, filter_people in operations:
+        if value is not None:
+            filtered = filter_people(filtered, value)
+        if not filtered:
+            break
+    return filtered
+
+
+def filter_by_employee_id(
+    people: list[PersonInfo],
     value: str,
 ) -> list[PersonInfo]:
-    """Return only people whose employee ID equals the normalized query."""
+    """Keep only people whose employee ID exactly equals the normalized value."""
     normalized = normalize_employee_id(value)
-    return _deduplicate_people(
+    return list(
         person
-        for person in directory.search(normalized)
+        for person in people
         if person["employee_id"].strip() == normalized
     )
 
 
-def find_by_phone(directory: PeopleDirectory, value: str) -> list[PersonInfo]:
-    """Return only people whose normalized phone equals the query."""
+def filter_by_phone(people: list[PersonInfo], value: str) -> list[PersonInfo]:
+    """Keep only people whose normalized phone exactly equals the value."""
     normalized = normalize_phone(value)
-    return _deduplicate_people(
+    return list(
         person
-        for person in directory.search(normalized)
+        for person in people
         if _phone_digits(person["phone"]) == normalized
     )
 
 
-def find_by_phone_suffix(
-    directory: PeopleDirectory,
+def filter_by_phone_suffix(
+    people: list[PersonInfo],
     value: str,
 ) -> list[PersonInfo]:
-    """Return only people whose normalized phone ends with the query."""
+    """Keep only people whose normalized phone ends with the value."""
     normalized = normalize_phone(value)
-    return _deduplicate_people(
+    return list(
         person
-        for person in directory.search(normalized)
+        for person in people
         if _phone_digits(person["phone"]).endswith(normalized)
     )
 
 
-def find_by_name(directory: PeopleDirectory, value: str) -> list[PersonInfo]:
-    """Return only people whose full name equals the query."""
-    normalized = _require_value(value, label="姓名")
-    return _deduplicate_people(
+def filter_by_name(people: list[PersonInfo], value: str) -> list[PersonInfo]:
+    """Keep people whose name field contains the supplied text."""
+    normalized = normalize_name(value)
+    return list(
         person
-        for person in directory.search(normalized)
-        if person["name"].strip() == normalized
-    )
-
-
-def find_by_name_fragment(
-    directory: PeopleDirectory,
-    value: str,
-) -> list[PersonInfo]:
-    """Return only people whose name contains the supplied fragment."""
-    normalized = _require_value(value, label="姓名片段")
-    return _deduplicate_people(
-        person
-        for person in directory.search(normalized)
+        for person in people
         if normalized in person["name"].strip()
     )
+
+
+def filter_by_department(
+    people: list[PersonInfo],
+    value: str,
+) -> list[PersonInfo]:
+    """Keep only people whose department exactly equals the supplied value."""
+    normalized = _require_value(value, label="部门")
+    return list(
+        person
+        for person in people
+        if person["department"].strip() == normalized
+    )
+
+
+def active_conditions(
+    *,
+    employee_id: str | None,
+    phone: str | None,
+    name: str | None,
+    phone_suffix: str | None,
+    department: str | None,
+) -> list[PersonCondition]:
+    """List supplied conditions in the same stable order as the filter pipeline."""
+    values = (
+        ("employee_id", employee_id),
+        ("phone", phone),
+        ("name", name),
+        ("phone_suffix", phone_suffix),
+        ("department", department),
+    )
+    return [field_name for field_name, value in values if value is not None]
 
 
 def normalize_employee_id(value: str) -> str:
@@ -293,19 +355,9 @@ def normalize_phone(value: str) -> str:
     return normalized
 
 
-def _intersect_people(groups: list[list[PersonInfo]]) -> list[PersonInfo]:
-    if not groups:
-        return []
-    common_employee_ids = {person["employee_id"] for person in groups[0]}
-    for group in groups[1:]:
-        common_employee_ids.intersection_update(
-            person["employee_id"] for person in group
-        )
-    return [
-        person
-        for person in groups[0]
-        if person["employee_id"] in common_employee_ids
-    ]
+def normalize_name(value: str) -> str:
+    """Normalize text used for both remote name lookup and local contains matching."""
+    return _require_value(value, label="姓名")
 
 
 def _deduplicate_people(people: Iterable[PersonInfo]) -> list[PersonInfo]:

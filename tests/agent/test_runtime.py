@@ -283,14 +283,15 @@ class AgentRuntimeTests(unittest.TestCase):
         prompt_without_skill = build_system_prompt([])
         prompt_with_skill = build_system_prompt(list(skill.tools), [skill])
 
-        self.assertNotIn("你负责结合用户的完整问题", prompt_without_skill)
+        self.assertNotIn("区分“用于查询的条件”", prompt_without_skill)
         self.assertIn("people-directory", prompt_with_skill)
-        self.assertIn("你负责结合用户的完整问题", prompt_with_skill)
         self.assertIn("`find_person`", prompt_with_skill)
         self.assertIn("自行区分“用于查询的条件”", prompt_with_skill)
         self.assertIn("再查看结果中的姓名", prompt_with_skill)
         self.assertIn("灵活使用返回的人员信息", prompt_with_skill)
-        self.assertIn("conditions_conflict", prompt_with_skill)
+        self.assertIn("no_common_match", prompt_with_skill)
+        self.assertIn("姓名参数按姓名字段包含关系查询", prompt_with_skill)
+        self.assertIn("部门只能", prompt_with_skill)
         self.assertIn("不要擅自删除某个条件后重新查询", prompt_with_skill)
 
     def test_system_prompt_lists_meeting_tools_only_when_registered(self):
@@ -723,6 +724,9 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(stored["outputTokens"], 7)
         self.assertEqual(stored["totalTokens"], 18)
         self.assertFalse(stored["tokenUsageEstimated"])
+        self.assertEqual(len(stored["modelSteps"]), 1)
+        self.assertEqual(stored["modelSteps"][0]["phase"], "direct_answer")
+        self.assertEqual(stored["modelSteps"][0]["totalTokens"], 18)
         self.assertEqual(stored["contextWindowTokens"], 16_384)
         self.assertIsNotNone(stored["contextEstimatedTokens"])
 
@@ -835,6 +839,7 @@ class AgentRuntimeTests(unittest.TestCase):
                     "outputTokens": None,
                     "totalTokens": None,
                     "tokenUsageEstimated": False,
+                    "modelSteps": [],
                 }
             ],
         )

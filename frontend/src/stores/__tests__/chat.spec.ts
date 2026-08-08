@@ -42,6 +42,18 @@ function context(
               outputTokens: 120,
               totalTokens: 2_320,
               tokenUsageEstimated: false,
+              modelSteps: [
+                {
+                  step: 1,
+                  attempt: 1,
+                  phase: 'direct_answer' as const,
+                  toolNames: [],
+                  inputTokens: 2_200,
+                  outputTokens: 120,
+                  totalTokens: 2_320,
+                  estimated: false,
+                },
+              ],
             },
           ]
         : []),
@@ -79,6 +91,7 @@ describe('contextMessages', () => {
       inputTokens: 2_200,
       outputTokens: 120,
       contextWindowTokens: 16_384,
+      modelSteps: [{ phase: 'direct_answer', totalTokens: 2_320 }],
     })
   })
 
